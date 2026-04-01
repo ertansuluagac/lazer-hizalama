@@ -3,7 +3,7 @@
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0, user-scalable=no">
-<title>Lazer Hizalama v10</title>
+<title>Lazer Hizalama v11</title>
 <style>
 * { margin:0; padding:0; box-sizing:border-box; }
 body { background:#000; color:#fff; font-family:sans-serif; display:flex; flex-direction:column; height:100vh; overflow:hidden; }
@@ -14,7 +14,7 @@ body { background:#000; color:#fff; font-family:sans-serif; display:flex; flex-d
 .green { color:#00ff44; }
 .yellow { color:#ffcc00; }
 .red { color:#ff4444; }
-#ver { position:absolute; top:4px; right:8px; font-size:10px; color:#444; }
+#ver { position:absolute; top:4px; right:8px; font-size:10px; color:#555; }
 #camWrap { position:relative; flex:1; overflow:hidden; background:#000; }
 #video { width:100%; height:100%; object-fit:cover; display:block; filter:grayscale(1) contrast(2) brightness(0.85); }
 #oc { position:absolute; top:0; left:0; width:100%; height:100%; pointer-events:none; }
@@ -26,11 +26,11 @@ button.primary { background:#0a2a15; border-color:#00ff44; color:#00ff44; }
 </head>
 <body>
 <div id="header">
-  <div class="hcell"><div class="lbl">Noz &#216;</div><div class="val" id="nozVal">1.60</div></div>
+  <div class="hcell"><div class="lbl">Noz &#216; (mm)</div><div class="val" id="nozVal">--</div></div>
   <div class="hcell"><div class="lbl">Batarya</div><div class="val" id="battVal" style="font-size:16px;">--%</div></div>
   <div class="hcell"><div class="lbl">&#916;X (mm)</div><div class="val" id="dxVal">--</div></div>
   <div class="hcell"><div class="lbl">&#916;Y (mm)</div><div class="val" id="dyVal">--</div></div>
-  <div id="ver">v10</div>
+  <div id="ver">v11</div>
 </div>
 <div id="camWrap">
   <video id="video" autoplay playsinline muted></video>
@@ -38,7 +38,7 @@ button.primary { background:#0a2a15; border-color:#00ff44; color:#00ff44; }
 </div>
 <div id="statusBar">Kamera baslatiliyor...</div>
 <div id="footer">
-  <button class="primary" id="btnDiam">Cap: 1.60 mm</button>
+  <button class="primary" id="btnDiam">Referans Cap: 1.60 mm</button>
   <button id="btnSens">Hassasiyet: Orta</button>
 </div>
 <script>
@@ -58,9 +58,10 @@ const redThresh=[22,40,62];
 
 const wc=document.createElement('canvas');
 const wctx=wc.getContext('2d',{willReadFrequently:true});
-const PW=160,PH=120;
+const PW=160, PH=120;
 wc.width=PW; wc.height=PH;
 
+// Batarya
 (async()=>{
   try{
     const b=await navigator.getBattery();
@@ -73,6 +74,7 @@ wc.width=PW; wc.height=PH;
   }catch(e){battVal.textContent='N/A';}
 })();
 
+// Kamera
 async function startCam(){
   const constraints=[
     {video:{facingMode:'user',width:{ideal:1280},height:{ideal:720}}},
@@ -85,7 +87,7 @@ async function startCam(){
       const s=await navigator.mediaDevices.getUserMedia(c);
       video.srcObject=s;
       await new Promise(r=>video.onloadedmetadata=r);
-      statusBar.textContent='Kamera aktif — v10';
+      statusBar.textContent='Kamera aktif — v11';
       requestAnimationFrame(loop);
       return;
     }catch(e){}
@@ -93,63 +95,67 @@ async function startCam(){
   statusBar.textContent='Kamera acilamadi — izin verin';
 }
 
-function findRed(data,W,H){
+// Parlak alan tespiti — nozzle'ın yansıyan ışığı
+function findBright(data,W,H){
+  const pts=[];
+  const mg=Math.floor(Math.min(W,H)*0.05);
+  for(let y=mg;y<H-mg;y+=2){
+    for(let x=mg;x<W-mg;x+=2){
+      const i=(y*W+x)*4;
+      const bright=(data[i]+data[i+1]+data[i+2])/3;
+      if(bright>180) pts.push([x,y]);
+    }
+  }
+  if(pts.length<15) return null;
+
+  let sx=0,sy=0;
+  for(const[x,y]of pts){sx+=x;sy+=y;}
+  const cx=sx/pts.length, cy=sy/pts.length;
+
+  // Merkeze göre uzaklıklar → medyan = yarıçap
+  const ds=pts.map(([x,y])=>Math.sqrt((x-cx)**2+(y-cy)**2)).sort((a,b)=>a-b);
+  const r=ds[Math.floor(ds.length*0.7)];
+
+  if(r<Math.min(W,H)*0.04||r>Math.min(W,H)*0.48) return null;
+  return{cx,cy,r};
+}
+
+// Kırmızı ışık — sadece parlak alanın içinde ara
+function findRed(data,W,H,bcx,bcy,br){
   const t=redThresh[sensLevel];
-  // Önce çok parlak kırmızıyı bul (saçılma değil gerçek ışık)
   let sx=0,sy=0,n=0;
   for(let i=0;i<data.length;i+=4){
     const r=data[i],g=data[i+1],b=data[i+2];
-    // Yüksek eşik — sadece en parlak kırmızı
-    if(r>200&&g<t&&b<t&&r>g*3&&r>b*3){
-      sx+=(i/4)%W; sy+=Math.floor((i/4)/W); n++;
-    }
-  }
-  // Yüksek eşikte bulamazsa normal eşiğe düş
-  if(n<4){
-    sx=0; sy=0; n=0;
-    for(let i=0;i<data.length;i+=4){
-      const r=data[i],g=data[i+1],b=data[i+2];
-      if(r>130&&g<t&&b<t&&r>g*2.2&&r>b*2.2){
-        sx+=(i/4)%W; sy+=Math.floor((i/4)/W); n++;
-      }
-    }
-  }
-  if(n<4) return null;
-  const cx=sx/n, cy=sy/n;
-  // Merkeze yakın piksellerin çapını hesapla (saçılmayı eler)
-  let dists=[];
-  for(let i=0;i<data.length;i+=4){
-    const r=data[i],g=data[i+1],b=data[i+2];
-    if(r>130&&g<t&&b<t&&r>g*2.2&&r>b*2.2){
+    if(r>150&&g<t&&b<t&&r>g*2.5&&r>b*2.5){
       const px=(i/4)%W, py=Math.floor((i/4)/W);
-      dists.push(Math.sqrt((px-cx)**2+(py-cy)**2));
+      // Sadece parlak alan içinde ara
+      if(bcx>=0){
+        const dx=px-bcx, dy=py-bcy;
+        if(dx*dx+dy*dy>br*br*1.5) continue;
+      }
+      sx+=px; sy+=py; n++;
     }
   }
-  dists.sort((a,b)=>a-b);
-  const diamPx=dists[Math.floor(dists.length*0.5)]*2; // medyan yarıçap x2
-  return{x:cx,y:cy,diamPx};
+  return n>4?{x:sx/n,y:sy/n}:null;
 }
 
+// Dart hedefi — sabit ortada
 function drawDart(ctx,cx,cy,R,color,W,H){
   ctx.shadowColor='rgba(0,0,0,0.95)';
   ctx.shadowBlur=10;
 
-  // Dış büyük daire
   ctx.beginPath(); ctx.arc(cx,cy,R,0,Math.PI*2);
   ctx.strokeStyle=color; ctx.lineWidth=6; ctx.stroke();
 
-  // İç küçük daire
   ctx.beginPath(); ctx.arc(cx,cy,R*0.3,0,Math.PI*2);
   ctx.strokeStyle=color; ctx.lineWidth=4; ctx.stroke();
 
-  // Dışa taşan kalın çizgiler
   ctx.lineWidth=6; ctx.strokeStyle=color;
   ctx.beginPath(); ctx.moveTo(0,cy); ctx.lineTo(cx-R-2,cy); ctx.stroke();
   ctx.beginPath(); ctx.moveTo(cx+R+2,cy); ctx.lineTo(W,cy); ctx.stroke();
   ctx.beginPath(); ctx.moveTo(cx,0); ctx.lineTo(cx,cy-R-2); ctx.stroke();
   ctx.beginPath(); ctx.moveTo(cx,cy+R+2); ctx.lineTo(cx,H); ctx.stroke();
 
-  // İçeride kesik
   ctx.save();
   ctx.setLineDash([14,8]);
   ctx.lineWidth=4; ctx.strokeStyle=color;
@@ -157,7 +163,6 @@ function drawDart(ctx,cx,cy,R,color,W,H){
   ctx.beginPath(); ctx.moveTo(cx,cy-R+2); ctx.lineTo(cx,cy+R-2); ctx.stroke();
   ctx.restore();
 
-  // Merkez +
   ctx.shadowBlur=0;
   ctx.lineWidth=5; ctx.strokeStyle=color;
   ctx.beginPath();
@@ -166,60 +171,97 @@ function drawDart(ctx,cx,cy,R,color,W,H){
   ctx.stroke();
   ctx.beginPath(); ctx.arc(cx,cy,6,0,Math.PI*2);
   ctx.fillStyle=color; ctx.fill();
+}
+
+// Parlak alan circle — nozzle
+function drawBrightCircle(ctx,cx,cy,r,W,H){
+  ctx.shadowColor='rgba(0,0,0,0.8)';
+  ctx.shadowBlur=6;
+  ctx.beginPath(); ctx.arc(cx,cy,r,0,Math.PI*2);
+  ctx.strokeStyle='rgba(100,180,255,0.7)';
+  ctx.lineWidth=3;
+  ctx.setLineDash([6,4]);
+  ctx.stroke();
+  ctx.setLineDash([]);
   ctx.shadowBlur=0;
 }
 
+// Kırmızı ışık circle
 function drawRedCircle(ctx,rx,ry,centered){
   ctx.shadowColor='rgba(0,0,0,0.9)';
   ctx.shadowBlur=8;
 
-  // Dış circle — sabit boyut
-  ctx.beginPath(); ctx.arc(rx,ry,32,0,Math.PI*2);
+  ctx.beginPath(); ctx.arc(rx,ry,28,0,Math.PI*2);
   ctx.strokeStyle=centered?'#00ff44':'#ff2222';
   ctx.lineWidth=5; ctx.stroke();
 
-  // Orta circle
-  ctx.beginPath(); ctx.arc(rx,ry,18,0,Math.PI*2);
+  ctx.beginPath(); ctx.arc(rx,ry,14,0,Math.PI*2);
   ctx.strokeStyle=centered?'#00ff44':'#ff6600';
   ctx.lineWidth=3; ctx.stroke();
 
-  // Merkez nokta
-  ctx.beginPath(); ctx.arc(rx,ry,8,0,Math.PI*2);
+  ctx.beginPath(); ctx.arc(rx,ry,7,0,Math.PI*2);
   ctx.fillStyle=centered?'rgba(0,255,68,0.95)':'rgba(255,30,30,0.95)';
   ctx.fill();
   ctx.strokeStyle='#fff'; ctx.lineWidth=2; ctx.stroke();
-
   ctx.shadowBlur=0;
 }
 
-let lastR=null;
+let fc=0, lastB=null, lastR=null;
 
 function loop(){
   if(video.readyState<2){requestAnimationFrame(loop);return;}
+  fc++;
 
   const ow=oc.offsetWidth, oh=oc.offsetHeight;
   if(oc.width!==ow||oc.height!==oh){oc.width=ow; oc.height=oh;}
   octx.clearRect(0,0,ow,oh);
 
-  // Dart her zaman tam orta
+  // Dart merkezi — sabit orta
   const dartX=ow/2, dartY=oh/2;
   const dartR=Math.min(ow,oh)*0.32;
-  const nd=diams[diamIdx];
-  const mpp=nd/(dartR*2);
 
-  // Kırmızı tespit
+  // Küçük canvas işleme
   wctx.drawImage(video,0,0,PW,PH);
   const raw=wctx.getImageData(0,0,PW,PH).data;
-  lastR=findRed(raw,PW,PH);
+
+  // Parlak alan her 4 frame
+  if(fc%4===0) lastB=findBright(raw,PW,PH);
+
+  // Kırmızı — parlak alan içinde her frame
+  const bcx=lastB?lastB.cx:-1;
+  const bcy=lastB?lastB.cy:-1;
+  const br=lastB?lastB.r:-1;
+  lastR=findRed(raw,PW,PH,bcx,bcy,br);
+
+  const sx=ow/PW, sy=oh/PH;
+  const refDiam=diams[diamIdx];
+
+  // Parlak alan çiz + Noz çapı hesapla
+  if(lastB){
+    const bx=lastB.cx*sx, by=lastB.cy*sy;
+    const br2=lastB.r*(sx+sy)/2;
+
+    // Noz çapı: parlak alanın pikseli → mm
+    // Referans: kullanıcının seçtiği çap = dartR piksel
+    const mpp=refDiam/(dartR*2);
+    const nozDiamMm=(br2*2)*mpp;
+    nozVal.textContent=nozDiamMm.toFixed(2);
+
+    drawBrightCircle(octx,bx,by,br2,ow,oh);
+  } else {
+    nozVal.textContent='--';
+  }
+
+  // Referans mm/px
+  const mpp=refDiam/(dartR*2);
 
   let color='#ffcc00';
 
   if(lastR){
-    const rx=lastR.x*(ow/PW);
-    const ry=lastR.y*(oh/PH);
+    const rx=lastR.x*sx, ry=lastR.y*sy;
     const dxp=rx-dartX, dyp=ry-dartY;
     const dist=Math.sqrt(dxp**2+dyp**2);
-    const centered=dist<dartR*0.12;
+    const centered=dist<dartR*0.10;
     color=centered?'#00ff44':'#ffcc00';
 
     const dxm=dxp*mpp, dym=dyp*mpp;
@@ -228,7 +270,7 @@ function loop(){
     dxEl.textContent=fmt(dxm); dxEl.className=cls(dxm);
     dyEl.textContent=fmt(dym); dyEl.className=cls(dym);
 
-    // Ok
+    // Ok yönlendirme
     if(!centered&&dist>10){
       const ang=Math.atan2(dyp,dxp);
       const len=Math.min(dist*0.45,65);
@@ -243,21 +285,18 @@ function loop(){
     }
 
     drawRedCircle(octx,rx,ry,centered);
-
-    // Işık çapını mm cinsinden hesapla ve Noz'a yaz
-    if(lastR.diamPx>2){
-      const lightDiamMm=(lastR.diamPx*(ow/PW))*mpp;
-      nozVal.textContent=lightDiamMm.toFixed(2);
-    }
-
     statusBar.textContent=centered?'✓ MERKEZ — Hizalandi!':'Hizalanmiyor — vidaları ayarlayin';
   } else {
     dxEl.textContent='--'; dxEl.className='val';
     dyEl.textContent='--'; dyEl.className='val';
-    statusBar.textContent='Kirmizi isik bulunamadi';
+    if(lastB){
+      statusBar.textContent='Nozzle bulundu — kirmizi isik bekleniyor';
+    } else {
+      statusBar.textContent='Nozzle yaklastirin';
+    }
   }
 
-  // Dart her zaman en son çizilir — üstte görünür
+  // Dart en son çizilir — hep üstte
   drawDart(octx,dartX,dartY,dartR,color,ow,oh);
 
   requestAnimationFrame(loop);
@@ -265,8 +304,7 @@ function loop(){
 
 document.getElementById('btnDiam').addEventListener('click',()=>{
   diamIdx=(diamIdx+1)%diams.length;
-  nozVal.textContent=diams[diamIdx].toFixed(2);
-  document.getElementById('btnDiam').textContent='Cap: '+diams[diamIdx].toFixed(2)+' mm';
+  document.getElementById('btnDiam').textContent='Referans Cap: '+diams[diamIdx].toFixed(2)+' mm';
 });
 document.getElementById('btnSens').addEventListener('click',()=>{
   sensLevel=(sensLevel+1)%3;
