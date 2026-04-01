@@ -3,7 +3,7 @@
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0, user-scalable=no">
-<title>Lazer Hizalama</title>
+<title>Lazer Hizalama v8</title>
 <style>
 * { margin:0; padding:0; box-sizing:border-box; }
 body { background:#000; color:#fff; font-family:sans-serif; display:flex; flex-direction:column; height:100vh; overflow:hidden; }
@@ -14,6 +14,7 @@ body { background:#000; color:#fff; font-family:sans-serif; display:flex; flex-d
 .green { color:#00ff44; }
 .yellow { color:#ffcc00; }
 .red { color:#ff4444; }
+#ver { position:absolute; top:4px; right:8px; font-size:10px; color:#444; }
 #camWrap { position:relative; flex:1; overflow:hidden; background:#000; }
 #video { width:100%; height:100%; object-fit:cover; display:block; filter:grayscale(1) contrast(2) brightness(0.85); }
 #oc { position:absolute; top:0; left:0; width:100%; height:100%; pointer-events:none; }
@@ -29,6 +30,7 @@ button.primary { background:#0a2a15; border-color:#00ff44; color:#00ff44; }
   <div class="hcell"><div class="lbl">Batarya</div><div class="val" id="battVal" style="font-size:16px;">--%</div></div>
   <div class="hcell"><div class="lbl">&#916;X (mm)</div><div class="val" id="dxVal">--</div></div>
   <div class="hcell"><div class="lbl">&#916;Y (mm)</div><div class="val" id="dyVal">--</div></div>
+  <div id="ver">v8</div>
 </div>
 <div id="camWrap">
   <video id="video" autoplay playsinline muted></video>
@@ -54,13 +56,11 @@ let diamIdx=4, sensLevel=1;
 const sensLabels=['Dusuk','Orta','Yuksek'];
 const redThresh=[22,40,62];
 
-// Küçük canvas sadece kırmızı tespit için
 const wc=document.createElement('canvas');
 const wctx=wc.getContext('2d',{willReadFrequently:true});
-const PW=160, PH=120;
+const PW=160,PH=120;
 wc.width=PW; wc.height=PH;
 
-// Batarya
 (async()=>{
   try{
     const b=await navigator.getBattery();
@@ -80,13 +80,12 @@ async function startCam(){
     });
     video.srcObject=s;
     video.onloadedmetadata=()=>{
-      statusBar.textContent='Kamera aktif';
+      statusBar.textContent='Kamera aktif — v8';
       requestAnimationFrame(loop);
     };
   }catch(e){statusBar.textContent='Kamera izni gerekli';}
 }
 
-// Kırmızı ışık tespiti
 function findRed(data,W,H){
   const t=redThresh[sensLevel];
   let sx=0,sy=0,n=0;
@@ -99,12 +98,11 @@ function findRed(data,W,H){
   return n>6?{x:sx/n,y:sy/n}:null;
 }
 
-// Sabit dart hedefi çiz — ekran ortasında
 function drawDart(ctx,cx,cy,R,color,W,H){
-  ctx.shadowColor='rgba(0,0,0,0.9)';
-  ctx.shadowBlur=8;
+  ctx.shadowColor='rgba(0,0,0,0.95)';
+  ctx.shadowBlur=10;
 
-  // Dış daire
+  // Dış büyük daire
   ctx.beginPath(); ctx.arc(cx,cy,R,0,Math.PI*2);
   ctx.strokeStyle=color; ctx.lineWidth=6; ctx.stroke();
 
@@ -112,14 +110,14 @@ function drawDart(ctx,cx,cy,R,color,W,H){
   ctx.beginPath(); ctx.arc(cx,cy,R*0.3,0,Math.PI*2);
   ctx.strokeStyle=color; ctx.lineWidth=4; ctx.stroke();
 
-  // Dışarı taşan kalın çizgiler
+  // Dışa taşan kalın çizgiler
   ctx.lineWidth=6; ctx.strokeStyle=color;
   ctx.beginPath(); ctx.moveTo(0,cy); ctx.lineTo(cx-R-2,cy); ctx.stroke();
   ctx.beginPath(); ctx.moveTo(cx+R+2,cy); ctx.lineTo(W,cy); ctx.stroke();
   ctx.beginPath(); ctx.moveTo(cx,0); ctx.lineTo(cx,cy-R-2); ctx.stroke();
   ctx.beginPath(); ctx.moveTo(cx,cy+R+2); ctx.lineTo(cx,H); ctx.stroke();
 
-  // İçeride kesik çizgiler
+  // İçeride kesik
   ctx.save();
   ctx.setLineDash([14,8]);
   ctx.lineWidth=4; ctx.strokeStyle=color;
@@ -127,7 +125,7 @@ function drawDart(ctx,cx,cy,R,color,W,H){
   ctx.beginPath(); ctx.moveTo(cx,cy-R+2); ctx.lineTo(cx,cy+R-2); ctx.stroke();
   ctx.restore();
 
-  // Merkez + ve nokta
+  // Merkez +
   ctx.shadowBlur=0;
   ctx.lineWidth=5; ctx.strokeStyle=color;
   ctx.beginPath();
@@ -136,24 +134,19 @@ function drawDart(ctx,cx,cy,R,color,W,H){
   ctx.stroke();
   ctx.beginPath(); ctx.arc(cx,cy,6,0,Math.PI*2);
   ctx.fillStyle=color; ctx.fill();
+  ctx.shadowBlur=0;
 }
 
-// Kırmızı nokta için circle çiz
 function drawRedCircle(ctx,rx,ry,centered){
   ctx.shadowColor='rgba(0,0,0,0.8)';
   ctx.shadowBlur=6;
-
-  // Dış circle
-  ctx.beginPath(); ctx.arc(rx,ry,22,0,Math.PI*2);
+  ctx.beginPath(); ctx.arc(rx,ry,24,0,Math.PI*2);
   ctx.strokeStyle=centered?'#00ff44':'#ff2222';
   ctx.lineWidth=4; ctx.stroke();
-
-  // İç dolu nokta
   ctx.beginPath(); ctx.arc(rx,ry,10,0,Math.PI*2);
   ctx.fillStyle=centered?'rgba(0,255,68,0.95)':'rgba(255,30,30,0.95)';
   ctx.fill();
   ctx.strokeStyle='#fff'; ctx.lineWidth=2; ctx.stroke();
-
   ctx.shadowBlur=0;
 }
 
@@ -166,23 +159,20 @@ function loop(){
   if(oc.width!==ow||oc.height!==oh){oc.width=ow; oc.height=oh;}
   octx.clearRect(0,0,ow,oh);
 
-  // Dart merkezi — her zaman ekran ortası
+  // Dart her zaman tam orta
   const dartX=ow/2, dartY=oh/2;
   const dartR=Math.min(ow,oh)*0.32;
+  const nd=diams[diamIdx];
+  const mpp=nd/(dartR*2);
 
   // Kırmızı tespit
   wctx.drawImage(video,0,0,PW,PH);
   const raw=wctx.getImageData(0,0,PW,PH).data;
   lastR=findRed(raw,PW,PH);
 
-  const nd=diams[diamIdx];
-  // mm/px kalibrasyonu: dart dairesi = nozzle çapı varsayımı
-  const mpp=nd/(dartR*2);
-
   let color='#ffcc00';
 
   if(lastR){
-    // Küçük canvas koordinatlarını ekran koordinatlarına çevir
     const rx=lastR.x*(ow/PW);
     const ry=lastR.y*(oh/PH);
     const dxp=rx-dartX, dyp=ry-dartY;
@@ -196,10 +186,10 @@ function loop(){
     dxEl.textContent=fmt(dxm); dxEl.className=cls(dxm);
     dyEl.textContent=fmt(dym); dyEl.className=cls(dym);
 
-    // Ok yönlendirme
-    if(!centered&&dist>8){
+    // Ok
+    if(!centered&&dist>10){
       const ang=Math.atan2(dyp,dxp);
-      const len=Math.min(dist*0.5,65);
+      const len=Math.min(dist*0.45,65);
       const ex=dartX+Math.cos(ang)*len, ey=dartY+Math.sin(ang)*len;
       octx.beginPath(); octx.moveTo(dartX,dartY); octx.lineTo(ex,ey);
       octx.strokeStyle='#ff8800'; octx.lineWidth=5; octx.stroke();
@@ -210,9 +200,7 @@ function loop(){
       octx.closePath(); octx.fillStyle='#ff8800'; octx.fill();
     }
 
-    // Kırmızı circle
     drawRedCircle(octx,rx,ry,centered);
-
     statusBar.textContent=centered?'✓ MERKEZ — Hizalandi!':'Hizalanmiyor — vidaları ayarlayin';
   } else {
     dxEl.textContent='--'; dxEl.className='val';
@@ -220,7 +208,7 @@ function loop(){
     statusBar.textContent='Kirmizi isik bulunamadi';
   }
 
-  // Sabit dart hedefi her zaman çiz
+  // Dart her zaman en son çizilir — üstte görünür
   drawDart(octx,dartX,dartY,dartR,color,ow,oh);
 
   requestAnimationFrame(loop);
