@@ -15,8 +15,8 @@ body { background:#000; color:#fff; font-family:sans-serif; display:flex; flex-d
 .yellow { color:#ffcc00; }
 .red { color:#ff4444; }
 #camWrap { position:relative; flex:1; overflow:hidden; background:#000; }
-#mainCanvas { width:100%; height:100%; display:block; }
-#video { display:none; }
+#video { width:100%; height:100%; object-fit:cover; display:block; filter:grayscale(1) contrast(2) brightness(0.85); }
+#oc { position:absolute; top:0; left:0; width:100%; height:100%; pointer-events:none; }
 #statusBar { background:#0d0d0d; padding:5px 12px; font-size:12px; color:#aaa; text-align:center; border-top:1px solid #222; flex-shrink:0; }
 #footer { background:#111; padding:10px 12px; display:flex; gap:8px; flex-shrink:0; }
 button { flex:1; padding:9px; border-radius:8px; border:1px solid #444; background:#1a1a1a; color:#fff; font-size:13px; cursor:pointer; }
@@ -32,7 +32,7 @@ button.primary { background:#0a2a15; border-color:#00ff44; color:#00ff44; }
 </div>
 <div id="camWrap">
   <video id="video" autoplay playsinline muted></video>
-  <canvas id="mainCanvas"></canvas>
+  <canvas id="oc"></canvas>
 </div>
 <div id="statusBar">Kamera baslatiliyor...</div>
 <div id="footer">
@@ -41,8 +41,8 @@ button.primary { background:#0a2a15; border-color:#00ff44; color:#00ff44; }
 </div>
 <script>
 const video=document.getElementById('video');
-const mc=document.getElementById('mainCanvas');
-const mctx=mc.getContext('2d',{willReadFrequently:true});
+const oc=document.getElementById('oc');
+const octx=oc.getContext('2d');
 const statusBar=document.getElementById('statusBar');
 const nozVal=document.getElementById('nozVal');
 const dxEl=document.getElementById('dxVal');
@@ -53,11 +53,13 @@ let diamIdx=4, sensLevel=1;
 const sensLabels=['Dusuk','Orta','Yuksek'];
 const redThresh=[22,40,62];
 
+// Küçük canvas — sadece tespit
 const wc=document.createElement('canvas');
 const wctx=wc.getContext('2d',{willReadFrequently:true});
-const PW=320,PH=240;
+const PW=160, PH=120;
 wc.width=PW; wc.height=PH;
 
+// Batarya
 (async()=>{
   try{
     const b=await navigator.getBattery();
@@ -72,116 +74,162 @@ wc.width=PW; wc.height=PH;
 
 async function startCam(){
   try{
-    const s=await navigator.mediaDevices.getUserMedia({video:{facingMode:'user',width:{ideal:1280},height:{ideal:720}}});
+    const s=await navigator.mediaDevices.getUserMedia({
+      video:{facingMode:'user',width:{ideal:1280},height:{ideal:720}}
+    });
     video.srcObject=s;
     video.onloadedmetadata=()=>{
-      mc.width=video.videoWidth; mc.height=video.videoHeight;
-      statusBar.textContent='Kamera aktif — Nozzle\'i kameraya tutun';
+      statusBar.textContent='Kamera aktif';
       requestAnimationFrame(loop);
     };
   }catch(e){statusBar.textContent='Kamera izni gerekli';}
 }
 
-function findRed(data,W,H){
+// Kırmızı — sadece nozzle dairesi içinde ara
+function findRed(data,W,H,ncx,ncy,nr){
   const t=redThresh[sensLevel];
   let sx=0,sy=0,n=0;
   for(let i=0;i<data.length;i+=4){
     const r=data[i],g=data[i+1],b=data[i+2];
-    if(r>130&&g<t&&b<t&&r>g*2.2&&r>b*2.2){sx+=(i/4)%W;sy+=Math.floor((i/4)/W);n++;}
-  }
-  return n>10?{x:sx/n,y:sy/n,n}:null;
-}
-
-function findNozzle(data,W,H){
-  const gray=new Uint8Array(W*H);
-  for(let i=0;i<data.length;i+=4) gray[i/4]=(data[i]*77+data[i+1]*150+data[i+2]*29)>>8;
-  const edge=[];
-  const mg=Math.floor(Math.min(W,H)*0.07);
-  for(let y=mg;y<H-mg;y+=2){
-    for(let x=mg;x<W-mg;x+=2){
-      const g=(y,x)=>gray[y*W+x];
-      const gx=-g(y-1,x-1)+g(y-1,x+1)-2*g(y,x-1)+2*g(y,x+1)-g(y+1,x-1)+g(y+1,x+1);
-      const gy=-g(y-1,x-1)-2*g(y-1,x)-g(y-1,x+1)+g(y+1,x-1)+2*g(y+1,x)+g(y+1,x+1);
-      if(Math.sqrt(gx*gx+gy*gy)>55) edge.push([x,y]);
+    if(r>130&&g<t&&b<t&&r>g*2.2&&r>b*2.2){
+      const px=(i/4)%W, py=Math.floor((i/4)/W);
+      // Eğer nozzle biliniyorsa sadece içini kontrol et
+      if(ncx>=0){
+        const dx=px-ncx, dy=py-ncy;
+        if(dx*dx+dy*dy > nr*nr*1.1) continue;
+      }
+      sx+=px; sy+=py; n++;
     }
   }
-  if(edge.length<40) return null;
+  return n>6?{x:sx/n,y:sy/n}:null;
+}
+
+// Siyah daire tespiti
+function findDark(data,W,H){
+  const pts=[];
+  const mg=Math.floor(Math.min(W,H)*0.08);
+  for(let y=mg;y<H-mg;y+=2){
+    for(let x=mg;x<W-mg;x+=2){
+      const i=(y*W+x)*4;
+      if((data[i]+data[i+1]+data[i+2])/3<40) pts.push([x,y]);
+    }
+  }
+  if(pts.length<20) return null;
   let sx=0,sy=0;
-  for(const[x,y]of edge){sx+=x;sy+=y;}
-  const cx=sx/edge.length,cy=sy/edge.length;
-  const ds=edge.map(([x,y])=>Math.sqrt((x-cx)**2+(y-cy)**2)).sort((a,b)=>a-b);
-  const r=ds[Math.floor(ds.length*0.5)];
-  if(r<Math.min(W,H)*0.06||r>Math.min(W,H)*0.47) return null;
-  const lo=r*0.78,hi=r*1.22;
-  if(ds.filter(d=>d>=lo&&d<=hi).length/ds.length<0.20) return null;
+  for(const[x,y]of pts){sx+=x;sy+=y;}
+  const cx=sx/pts.length, cy=sy/pts.length;
+  const ds=pts.map(([x,y])=>Math.sqrt((x-cx)**2+(y-cy)**2)).sort((a,b)=>a-b);
+  const r=ds[Math.floor(ds.length*0.6)];
+  if(r<Math.min(W,H)*0.05||r>Math.min(W,H)*0.46) return null;
+  if(ds.filter(d=>d<=r*1.4).length/ds.length<0.45) return null;
   return{cx,cy,r};
 }
 
-function toGray(data){
-  for(let i=0;i<data.length;i+=4){
-    let g=(data[i]*77+data[i+1]*150+data[i+2]*29)>>8;
-    g=Math.min(255,Math.max(0,(g-70)*2.3));
-    data[i]=data[i+1]=data[i+2]=g; data[i+3]=255;
-  }
+// Dart hedefi — kalın belirgin
+function drawTarget(ctx,cx,cy,r,color,W,H){
+  // Gölge efekti — daha belirgin görünmesi için
+  ctx.shadowColor='rgba(0,0,0,0.8)';
+  ctx.shadowBlur=6;
+
+  // Dış büyük daire — kalın
+  ctx.beginPath(); ctx.arc(cx,cy,r,0,Math.PI*2);
+  ctx.strokeStyle=color; ctx.lineWidth=6; ctx.stroke();
+
+  // İç küçük daire
+  ctx.beginPath(); ctx.arc(cx,cy,r*0.3,0,Math.PI*2);
+  ctx.strokeStyle=color; ctx.lineWidth=4; ctx.stroke();
+
+  // Dışarıda kalın düz çizgiler
+  ctx.lineWidth=6; ctx.strokeStyle=color;
+  ctx.beginPath(); ctx.moveTo(0,cy); ctx.lineTo(cx-r-2,cy); ctx.stroke();
+  ctx.beginPath(); ctx.moveTo(cx+r+2,cy); ctx.lineTo(W,cy); ctx.stroke();
+  ctx.beginPath(); ctx.moveTo(cx,0); ctx.lineTo(cx,cy-r-2); ctx.stroke();
+  ctx.beginPath(); ctx.moveTo(cx,cy+r+2); ctx.lineTo(cx,H); ctx.stroke();
+
+  // İçeride kesik çizgiler
+  ctx.save();
+  ctx.setLineDash([14,8]);
+  ctx.lineWidth=4; ctx.strokeStyle=color;
+  ctx.beginPath(); ctx.moveTo(cx-r+2,cy); ctx.lineTo(cx+r-2,cy); ctx.stroke();
+  ctx.beginPath(); ctx.moveTo(cx,cy-r+2); ctx.lineTo(cx,cy+r-2); ctx.stroke();
+  ctx.restore();
+
+  // Merkez + işareti
+  ctx.shadowBlur=0;
+  ctx.lineWidth=5; ctx.strokeStyle=color;
+  ctx.beginPath();
+  ctx.moveTo(cx-20,cy); ctx.lineTo(cx+20,cy);
+  ctx.moveTo(cx,cy-20); ctx.lineTo(cx,cy+20);
+  ctx.stroke();
+
+  // Merkez dolu nokta
+  ctx.beginPath(); ctx.arc(cx,cy,6,0,Math.PI*2);
+  ctx.fillStyle=color; ctx.fill();
+
+  ctx.shadowBlur=0;
 }
 
-let fc=0,lastN=null,lastR=null;
+let fc=0, lastN=null, lastR=null;
 
 function loop(){
   if(video.readyState<2){requestAnimationFrame(loop);return;}
   fc++;
-  const W=mc.width,H=mc.height;
 
+  const ow=oc.offsetWidth, oh=oc.offsetHeight;
+  if(oc.width!==ow||oc.height!==oh){oc.width=ow; oc.height=oh;}
+  octx.clearRect(0,0,ow,oh);
+
+  // Küçük canvas işleme
   wctx.drawImage(video,0,0,PW,PH);
-  const small=wctx.getImageData(0,0,PW,PH);
-  const raw=new Uint8ClampedArray(small.data);
+  const raw=wctx.getImageData(0,0,PW,PH).data;
 
-  lastR=findRed(raw,PW,PH);
-  if(fc%3===0) lastN=findNozzle(raw,PW,PH);
+  // Nozzle her 5 frame
+  if(fc%5===0) lastN=findDark(raw,PW,PH);
 
-  mctx.drawImage(video,0,0,W,H);
-  const full=mctx.getImageData(0,0,W,H);
-  toGray(full.data);
-  mctx.putImageData(full,0,0);
+  // Kırmızı her frame — nozzle içinde ara
+  const ncx=lastN?lastN.cx:-1;
+  const ncy=lastN?lastN.cy:-1;
+  const nr=lastN?lastN.r:-1;
+  lastR=findRed(raw,PW,PH,ncx,ncy,nr);
 
-  const sx=W/PW,sy=H/PH;
+  const sx=ow/PW, sy=oh/PH;
   const nd=diams[diamIdx];
 
   if(lastN){
-    const nx=lastN.cx*sx,ny=lastN.cy*sy,nr=lastN.r*(sx+sy)/2;
+    const nx=lastN.cx*sx, ny=lastN.cy*sy, nr2=lastN.r*(sx+sy)/2;
     const mpp=nd/(lastN.r*2);
     nozVal.textContent=nd.toFixed(2);
-    let color='#ffcc00',centered=false;
+    let color='#ffcc00', centered=false;
 
     if(lastR){
-      const rx=lastR.x*sx,ry=lastR.y*sy;
-      const dxp=lastR.x-lastN.cx,dyp=lastR.y-lastN.cy;
+      const rx=lastR.x*sx, ry=lastR.y*sy;
+      const dxp=lastR.x-lastN.cx, dyp=lastR.y-lastN.cy;
       const dist=Math.sqrt(dxp**2+dyp**2);
-      const dxm=dxp*mpp,dym=dyp*mpp;
       centered=dist<lastN.r*0.12;
       color=centered?'#00ff44':'#ffcc00';
+      const dxm=dxp*mpp, dym=dyp*mpp;
       const fmt=v=>(v>=0?'+':'')+v.toFixed(2);
       const cls=v=>Math.abs(v)<0.05?'val green':Math.abs(v)<0.15?'val yellow':'val red';
       dxEl.textContent=fmt(dxm); dxEl.className=cls(dxm);
       dyEl.textContent=fmt(dym); dyEl.className=cls(dym);
 
-      mctx.beginPath();
-      mctx.arc(rx,ry,12,0,Math.PI*2);
-      mctx.fillStyle=centered?'rgba(0,255,68,0.85)':'rgba(255,30,30,0.85)';
-      mctx.fill();
-      mctx.strokeStyle='#fff'; mctx.lineWidth=2; mctx.stroke();
+      // Kırmızı nokta
+      octx.beginPath(); octx.arc(rx,ry,16,0,Math.PI*2);
+      octx.fillStyle=centered?'rgba(0,255,68,0.95)':'rgba(255,30,30,0.95)';
+      octx.fill(); octx.strokeStyle='#fff'; octx.lineWidth=3; octx.stroke();
 
-      if(!centered&&dist>5){
+      // Ok
+      if(!centered&&dist>4){
         const ang=Math.atan2(dyp,dxp);
-        const len=Math.min(nr*0.55,60);
-        const ex=nx+Math.cos(ang)*len,ey=ny+Math.sin(ang)*len;
-        mctx.beginPath(); mctx.moveTo(nx,ny); mctx.lineTo(ex,ey);
-        mctx.strokeStyle='#ffaa00'; mctx.lineWidth=3; mctx.stroke();
-        mctx.beginPath();
-        mctx.moveTo(ex,ey);
-        mctx.lineTo(ex-Math.cos(ang-0.45)*16,ey-Math.sin(ang-0.45)*16);
-        mctx.lineTo(ex-Math.cos(ang+0.45)*16,ey-Math.sin(ang+0.45)*16);
-        mctx.closePath(); mctx.fillStyle='#ffaa00'; mctx.fill();
+        const len=Math.min(nr2*0.55,70);
+        const ex=nx+Math.cos(ang)*len, ey=ny+Math.sin(ang)*len;
+        octx.beginPath(); octx.moveTo(nx,ny); octx.lineTo(ex,ey);
+        octx.strokeStyle='#ff8800'; octx.lineWidth=5; octx.stroke();
+        octx.beginPath();
+        octx.moveTo(ex,ey);
+        octx.lineTo(ex-Math.cos(ang-0.4)*20,ey-Math.sin(ang-0.4)*20);
+        octx.lineTo(ex-Math.cos(ang+0.4)*20,ey-Math.sin(ang+0.4)*20);
+        octx.closePath(); octx.fillStyle='#ff8800'; octx.fill();
       }
       statusBar.textContent=centered?'✓ MERKEZ — Hizalandi!':'Hizalanmiyor — vidaları ayarlayin';
     } else {
@@ -190,25 +238,7 @@ function loop(){
       statusBar.textContent='Nozzle bulundu — kirmizi isik bekleniyor';
     }
 
-    mctx.beginPath();
-    mctx.arc(nx,ny,nr,0,Math.PI*2);
-    mctx.strokeStyle=color; mctx.lineWidth=3; mctx.stroke();
-
-    mctx.save();
-    mctx.setLineDash([8,5]);
-    mctx.strokeStyle=color; mctx.lineWidth=1.5;
-    mctx.beginPath();
-    mctx.moveTo(nx-nr-20,ny); mctx.lineTo(nx+nr+20,ny);
-    mctx.moveTo(nx,ny-nr-20); mctx.lineTo(nx,ny+nr+20);
-    mctx.stroke();
-    mctx.restore();
-
-    mctx.beginPath(); mctx.arc(nx,ny,5,0,Math.PI*2);
-    mctx.strokeStyle=color; mctx.lineWidth=2; mctx.stroke();
-    mctx.beginPath();
-    mctx.moveTo(nx-14,ny); mctx.lineTo(nx+14,ny);
-    mctx.moveTo(nx,ny-14); mctx.lineTo(nx,ny+14);
-    mctx.strokeStyle=color; mctx.lineWidth=2; mctx.stroke();
+    drawTarget(octx,nx,ny,nr2,color,ow,oh);
 
   } else {
     nozVal.textContent='--';
