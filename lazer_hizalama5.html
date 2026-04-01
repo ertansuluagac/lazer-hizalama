@@ -25,7 +25,7 @@ button.primary { background:#0a2a15; border-color:#00ff44; color:#00ff44; }
 </head>
 <body>
 <div id="header">
-  <div class="hcell"><div class="lbl">Noz &#216;</div><div class="val" id="nozVal">--</div></div>
+  <div class="hcell"><div class="lbl">Noz &#216;</div><div class="val" id="nozVal">1.60</div></div>
   <div class="hcell"><div class="lbl">Batarya</div><div class="val" id="battVal" style="font-size:16px;">--%</div></div>
   <div class="hcell"><div class="lbl">&#916;X (mm)</div><div class="val" id="dxVal">--</div></div>
   <div class="hcell"><div class="lbl">&#916;Y (mm)</div><div class="val" id="dyVal">--</div></div>
@@ -48,12 +48,13 @@ const nozVal=document.getElementById('nozVal');
 const dxEl=document.getElementById('dxVal');
 const dyEl=document.getElementById('dyVal');
 const battVal=document.getElementById('battVal');
+
 const diams=[0.8,1.0,1.2,1.5,1.6,2.0,2.5,3.0];
 let diamIdx=4, sensLevel=1;
 const sensLabels=['Dusuk','Orta','Yuksek'];
 const redThresh=[22,40,62];
 
-// Küçük canvas — sadece tespit
+// Küçük canvas sadece kırmızı tespit için
 const wc=document.createElement('canvas');
 const wctx=wc.getContext('2d',{willReadFrequently:true});
 const PW=160, PH=120;
@@ -85,173 +86,149 @@ async function startCam(){
   }catch(e){statusBar.textContent='Kamera izni gerekli';}
 }
 
-// Kırmızı — sadece nozzle dairesi içinde ara
-function findRed(data,W,H,ncx,ncy,nr){
+// Kırmızı ışık tespiti
+function findRed(data,W,H){
   const t=redThresh[sensLevel];
   let sx=0,sy=0,n=0;
   for(let i=0;i<data.length;i+=4){
     const r=data[i],g=data[i+1],b=data[i+2];
     if(r>130&&g<t&&b<t&&r>g*2.2&&r>b*2.2){
-      const px=(i/4)%W, py=Math.floor((i/4)/W);
-      // Eğer nozzle biliniyorsa sadece içini kontrol et
-      if(ncx>=0){
-        const dx=px-ncx, dy=py-ncy;
-        if(dx*dx+dy*dy > nr*nr*1.1) continue;
-      }
-      sx+=px; sy+=py; n++;
+      sx+=(i/4)%W; sy+=Math.floor((i/4)/W); n++;
     }
   }
   return n>6?{x:sx/n,y:sy/n}:null;
 }
 
-// Siyah daire tespiti
-function findDark(data,W,H){
-  const pts=[];
-  const mg=Math.floor(Math.min(W,H)*0.08);
-  for(let y=mg;y<H-mg;y+=2){
-    for(let x=mg;x<W-mg;x+=2){
-      const i=(y*W+x)*4;
-      if((data[i]+data[i+1]+data[i+2])/3<40) pts.push([x,y]);
-    }
-  }
-  if(pts.length<20) return null;
-  let sx=0,sy=0;
-  for(const[x,y]of pts){sx+=x;sy+=y;}
-  const cx=sx/pts.length, cy=sy/pts.length;
-  const ds=pts.map(([x,y])=>Math.sqrt((x-cx)**2+(y-cy)**2)).sort((a,b)=>a-b);
-  const r=ds[Math.floor(ds.length*0.6)];
-  if(r<Math.min(W,H)*0.05||r>Math.min(W,H)*0.46) return null;
-  if(ds.filter(d=>d<=r*1.4).length/ds.length<0.45) return null;
-  return{cx,cy,r};
-}
+// Sabit dart hedefi çiz — ekran ortasında
+function drawDart(ctx,cx,cy,R,color,W,H){
+  ctx.shadowColor='rgba(0,0,0,0.9)';
+  ctx.shadowBlur=8;
 
-// Dart hedefi — kalın belirgin
-function drawTarget(ctx,cx,cy,r,color,W,H){
-  // Gölge efekti — daha belirgin görünmesi için
-  ctx.shadowColor='rgba(0,0,0,0.8)';
-  ctx.shadowBlur=6;
-
-  // Dış büyük daire — kalın
-  ctx.beginPath(); ctx.arc(cx,cy,r,0,Math.PI*2);
+  // Dış daire
+  ctx.beginPath(); ctx.arc(cx,cy,R,0,Math.PI*2);
   ctx.strokeStyle=color; ctx.lineWidth=6; ctx.stroke();
 
   // İç küçük daire
-  ctx.beginPath(); ctx.arc(cx,cy,r*0.3,0,Math.PI*2);
+  ctx.beginPath(); ctx.arc(cx,cy,R*0.3,0,Math.PI*2);
   ctx.strokeStyle=color; ctx.lineWidth=4; ctx.stroke();
 
-  // Dışarıda kalın düz çizgiler
+  // Dışarı taşan kalın çizgiler
   ctx.lineWidth=6; ctx.strokeStyle=color;
-  ctx.beginPath(); ctx.moveTo(0,cy); ctx.lineTo(cx-r-2,cy); ctx.stroke();
-  ctx.beginPath(); ctx.moveTo(cx+r+2,cy); ctx.lineTo(W,cy); ctx.stroke();
-  ctx.beginPath(); ctx.moveTo(cx,0); ctx.lineTo(cx,cy-r-2); ctx.stroke();
-  ctx.beginPath(); ctx.moveTo(cx,cy+r+2); ctx.lineTo(cx,H); ctx.stroke();
+  ctx.beginPath(); ctx.moveTo(0,cy); ctx.lineTo(cx-R-2,cy); ctx.stroke();
+  ctx.beginPath(); ctx.moveTo(cx+R+2,cy); ctx.lineTo(W,cy); ctx.stroke();
+  ctx.beginPath(); ctx.moveTo(cx,0); ctx.lineTo(cx,cy-R-2); ctx.stroke();
+  ctx.beginPath(); ctx.moveTo(cx,cy+R+2); ctx.lineTo(cx,H); ctx.stroke();
 
   // İçeride kesik çizgiler
   ctx.save();
   ctx.setLineDash([14,8]);
   ctx.lineWidth=4; ctx.strokeStyle=color;
-  ctx.beginPath(); ctx.moveTo(cx-r+2,cy); ctx.lineTo(cx+r-2,cy); ctx.stroke();
-  ctx.beginPath(); ctx.moveTo(cx,cy-r+2); ctx.lineTo(cx,cy+r-2); ctx.stroke();
+  ctx.beginPath(); ctx.moveTo(cx-R+2,cy); ctx.lineTo(cx+R-2,cy); ctx.stroke();
+  ctx.beginPath(); ctx.moveTo(cx,cy-R+2); ctx.lineTo(cx,cy+R-2); ctx.stroke();
   ctx.restore();
 
-  // Merkez + işareti
+  // Merkez + ve nokta
   ctx.shadowBlur=0;
   ctx.lineWidth=5; ctx.strokeStyle=color;
   ctx.beginPath();
-  ctx.moveTo(cx-20,cy); ctx.lineTo(cx+20,cy);
-  ctx.moveTo(cx,cy-20); ctx.lineTo(cx,cy+20);
+  ctx.moveTo(cx-22,cy); ctx.lineTo(cx+22,cy);
+  ctx.moveTo(cx,cy-22); ctx.lineTo(cx,cy+22);
   ctx.stroke();
-
-  // Merkez dolu nokta
   ctx.beginPath(); ctx.arc(cx,cy,6,0,Math.PI*2);
   ctx.fillStyle=color; ctx.fill();
+}
+
+// Kırmızı nokta için circle çiz
+function drawRedCircle(ctx,rx,ry,centered){
+  ctx.shadowColor='rgba(0,0,0,0.8)';
+  ctx.shadowBlur=6;
+
+  // Dış circle
+  ctx.beginPath(); ctx.arc(rx,ry,22,0,Math.PI*2);
+  ctx.strokeStyle=centered?'#00ff44':'#ff2222';
+  ctx.lineWidth=4; ctx.stroke();
+
+  // İç dolu nokta
+  ctx.beginPath(); ctx.arc(rx,ry,10,0,Math.PI*2);
+  ctx.fillStyle=centered?'rgba(0,255,68,0.95)':'rgba(255,30,30,0.95)';
+  ctx.fill();
+  ctx.strokeStyle='#fff'; ctx.lineWidth=2; ctx.stroke();
 
   ctx.shadowBlur=0;
 }
 
-let fc=0, lastN=null, lastR=null;
+let lastR=null;
 
 function loop(){
   if(video.readyState<2){requestAnimationFrame(loop);return;}
-  fc++;
 
   const ow=oc.offsetWidth, oh=oc.offsetHeight;
   if(oc.width!==ow||oc.height!==oh){oc.width=ow; oc.height=oh;}
   octx.clearRect(0,0,ow,oh);
 
-  // Küçük canvas işleme
+  // Dart merkezi — her zaman ekran ortası
+  const dartX=ow/2, dartY=oh/2;
+  const dartR=Math.min(ow,oh)*0.32;
+
+  // Kırmızı tespit
   wctx.drawImage(video,0,0,PW,PH);
   const raw=wctx.getImageData(0,0,PW,PH).data;
+  lastR=findRed(raw,PW,PH);
 
-  // Nozzle her 5 frame
-  if(fc%5===0) lastN=findDark(raw,PW,PH);
-
-  // Kırmızı her frame — nozzle içinde ara
-  const ncx=lastN?lastN.cx:-1;
-  const ncy=lastN?lastN.cy:-1;
-  const nr=lastN?lastN.r:-1;
-  lastR=findRed(raw,PW,PH,ncx,ncy,nr);
-
-  const sx=ow/PW, sy=oh/PH;
   const nd=diams[diamIdx];
+  // mm/px kalibrasyonu: dart dairesi = nozzle çapı varsayımı
+  const mpp=nd/(dartR*2);
 
-  if(lastN){
-    const nx=lastN.cx*sx, ny=lastN.cy*sy, nr2=lastN.r*(sx+sy)/2;
-    const mpp=nd/(lastN.r*2);
-    nozVal.textContent=nd.toFixed(2);
-    let color='#ffcc00', centered=false;
+  let color='#ffcc00';
 
-    if(lastR){
-      const rx=lastR.x*sx, ry=lastR.y*sy;
-      const dxp=lastR.x-lastN.cx, dyp=lastR.y-lastN.cy;
-      const dist=Math.sqrt(dxp**2+dyp**2);
-      centered=dist<lastN.r*0.12;
-      color=centered?'#00ff44':'#ffcc00';
-      const dxm=dxp*mpp, dym=dyp*mpp;
-      const fmt=v=>(v>=0?'+':'')+v.toFixed(2);
-      const cls=v=>Math.abs(v)<0.05?'val green':Math.abs(v)<0.15?'val yellow':'val red';
-      dxEl.textContent=fmt(dxm); dxEl.className=cls(dxm);
-      dyEl.textContent=fmt(dym); dyEl.className=cls(dym);
+  if(lastR){
+    // Küçük canvas koordinatlarını ekran koordinatlarına çevir
+    const rx=lastR.x*(ow/PW);
+    const ry=lastR.y*(oh/PH);
+    const dxp=rx-dartX, dyp=ry-dartY;
+    const dist=Math.sqrt(dxp**2+dyp**2);
+    const centered=dist<dartR*0.12;
+    color=centered?'#00ff44':'#ffcc00';
 
-      // Kırmızı nokta
-      octx.beginPath(); octx.arc(rx,ry,16,0,Math.PI*2);
-      octx.fillStyle=centered?'rgba(0,255,68,0.95)':'rgba(255,30,30,0.95)';
-      octx.fill(); octx.strokeStyle='#fff'; octx.lineWidth=3; octx.stroke();
+    const dxm=dxp*mpp, dym=dyp*mpp;
+    const fmt=v=>(v>=0?'+':'')+v.toFixed(2);
+    const cls=v=>Math.abs(v)<0.05?'val green':Math.abs(v)<0.15?'val yellow':'val red';
+    dxEl.textContent=fmt(dxm); dxEl.className=cls(dxm);
+    dyEl.textContent=fmt(dym); dyEl.className=cls(dym);
 
-      // Ok
-      if(!centered&&dist>4){
-        const ang=Math.atan2(dyp,dxp);
-        const len=Math.min(nr2*0.55,70);
-        const ex=nx+Math.cos(ang)*len, ey=ny+Math.sin(ang)*len;
-        octx.beginPath(); octx.moveTo(nx,ny); octx.lineTo(ex,ey);
-        octx.strokeStyle='#ff8800'; octx.lineWidth=5; octx.stroke();
-        octx.beginPath();
-        octx.moveTo(ex,ey);
-        octx.lineTo(ex-Math.cos(ang-0.4)*20,ey-Math.sin(ang-0.4)*20);
-        octx.lineTo(ex-Math.cos(ang+0.4)*20,ey-Math.sin(ang+0.4)*20);
-        octx.closePath(); octx.fillStyle='#ff8800'; octx.fill();
-      }
-      statusBar.textContent=centered?'✓ MERKEZ — Hizalandi!':'Hizalanmiyor — vidaları ayarlayin';
-    } else {
-      dxEl.textContent='--'; dxEl.className='val';
-      dyEl.textContent='--'; dyEl.className='val';
-      statusBar.textContent='Nozzle bulundu — kirmizi isik bekleniyor';
+    // Ok yönlendirme
+    if(!centered&&dist>8){
+      const ang=Math.atan2(dyp,dxp);
+      const len=Math.min(dist*0.5,65);
+      const ex=dartX+Math.cos(ang)*len, ey=dartY+Math.sin(ang)*len;
+      octx.beginPath(); octx.moveTo(dartX,dartY); octx.lineTo(ex,ey);
+      octx.strokeStyle='#ff8800'; octx.lineWidth=5; octx.stroke();
+      octx.beginPath();
+      octx.moveTo(ex,ey);
+      octx.lineTo(ex-Math.cos(ang-0.4)*20,ey-Math.sin(ang-0.4)*20);
+      octx.lineTo(ex-Math.cos(ang+0.4)*20,ey-Math.sin(ang+0.4)*20);
+      octx.closePath(); octx.fillStyle='#ff8800'; octx.fill();
     }
 
-    drawTarget(octx,nx,ny,nr2,color,ow,oh);
+    // Kırmızı circle
+    drawRedCircle(octx,rx,ry,centered);
 
+    statusBar.textContent=centered?'✓ MERKEZ — Hizalandi!':'Hizalanmiyor — vidaları ayarlayin';
   } else {
-    nozVal.textContent='--';
     dxEl.textContent='--'; dxEl.className='val';
     dyEl.textContent='--'; dyEl.className='val';
-    statusBar.textContent='Nozzle tespit edilemiyor — yaklastirin';
+    statusBar.textContent='Kirmizi isik bulunamadi';
   }
+
+  // Sabit dart hedefi her zaman çiz
+  drawDart(octx,dartX,dartY,dartR,color,ow,oh);
 
   requestAnimationFrame(loop);
 }
 
 document.getElementById('btnDiam').addEventListener('click',()=>{
   diamIdx=(diamIdx+1)%diams.length;
+  nozVal.textContent=diams[diamIdx].toFixed(2);
   document.getElementById('btnDiam').textContent='Cap: '+diams[diamIdx].toFixed(2)+' mm';
 });
 document.getElementById('btnSens').addEventListener('click',()=>{
