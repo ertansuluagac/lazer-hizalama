@@ -3,7 +3,7 @@
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0, user-scalable=no">
-<title>Lazer Hizalama v8</title>
+<title>Lazer Hizalama v10</title>
 <style>
 * { margin:0; padding:0; box-sizing:border-box; }
 body { background:#000; color:#fff; font-family:sans-serif; display:flex; flex-direction:column; height:100vh; overflow:hidden; }
@@ -30,7 +30,7 @@ button.primary { background:#0a2a15; border-color:#00ff44; color:#00ff44; }
   <div class="hcell"><div class="lbl">Batarya</div><div class="val" id="battVal" style="font-size:16px;">--%</div></div>
   <div class="hcell"><div class="lbl">&#916;X (mm)</div><div class="val" id="dxVal">--</div></div>
   <div class="hcell"><div class="lbl">&#916;Y (mm)</div><div class="val" id="dyVal">--</div></div>
-  <div id="ver">v8</div>
+  <div id="ver">v10</div>
 </div>
 <div id="camWrap">
   <video id="video" autoplay playsinline muted></video>
@@ -74,28 +74,60 @@ wc.width=PW; wc.height=PH;
 })();
 
 async function startCam(){
-  try{
-    const s=await navigator.mediaDevices.getUserMedia({
-      video:{facingMode:'user',width:{ideal:1280},height:{ideal:720}}
-    });
-    video.srcObject=s;
-    video.onloadedmetadata=()=>{
-      statusBar.textContent='Kamera aktif — v8';
+  const constraints=[
+    {video:{facingMode:'user',width:{ideal:1280},height:{ideal:720}}},
+    {video:{facingMode:'environment',width:{ideal:1280},height:{ideal:720}}},
+    {video:{width:{ideal:1280},height:{ideal:720}}},
+    {video:true}
+  ];
+  for(const c of constraints){
+    try{
+      const s=await navigator.mediaDevices.getUserMedia(c);
+      video.srcObject=s;
+      await new Promise(r=>video.onloadedmetadata=r);
+      statusBar.textContent='Kamera aktif — v10';
       requestAnimationFrame(loop);
-    };
-  }catch(e){statusBar.textContent='Kamera izni gerekli';}
+      return;
+    }catch(e){}
+  }
+  statusBar.textContent='Kamera acilamadi — izin verin';
 }
 
 function findRed(data,W,H){
   const t=redThresh[sensLevel];
+  // Önce çok parlak kırmızıyı bul (saçılma değil gerçek ışık)
   let sx=0,sy=0,n=0;
   for(let i=0;i<data.length;i+=4){
     const r=data[i],g=data[i+1],b=data[i+2];
-    if(r>130&&g<t&&b<t&&r>g*2.2&&r>b*2.2){
+    // Yüksek eşik — sadece en parlak kırmızı
+    if(r>200&&g<t&&b<t&&r>g*3&&r>b*3){
       sx+=(i/4)%W; sy+=Math.floor((i/4)/W); n++;
     }
   }
-  return n>6?{x:sx/n,y:sy/n}:null;
+  // Yüksek eşikte bulamazsa normal eşiğe düş
+  if(n<4){
+    sx=0; sy=0; n=0;
+    for(let i=0;i<data.length;i+=4){
+      const r=data[i],g=data[i+1],b=data[i+2];
+      if(r>130&&g<t&&b<t&&r>g*2.2&&r>b*2.2){
+        sx+=(i/4)%W; sy+=Math.floor((i/4)/W); n++;
+      }
+    }
+  }
+  if(n<4) return null;
+  const cx=sx/n, cy=sy/n;
+  // Merkeze yakın piksellerin çapını hesapla (saçılmayı eler)
+  let dists=[];
+  for(let i=0;i<data.length;i+=4){
+    const r=data[i],g=data[i+1],b=data[i+2];
+    if(r>130&&g<t&&b<t&&r>g*2.2&&r>b*2.2){
+      const px=(i/4)%W, py=Math.floor((i/4)/W);
+      dists.push(Math.sqrt((px-cx)**2+(py-cy)**2));
+    }
+  }
+  dists.sort((a,b)=>a-b);
+  const diamPx=dists[Math.floor(dists.length*0.5)]*2; // medyan yarıçap x2
+  return{x:cx,y:cy,diamPx};
 }
 
 function drawDart(ctx,cx,cy,R,color,W,H){
@@ -138,15 +170,25 @@ function drawDart(ctx,cx,cy,R,color,W,H){
 }
 
 function drawRedCircle(ctx,rx,ry,centered){
-  ctx.shadowColor='rgba(0,0,0,0.8)';
-  ctx.shadowBlur=6;
-  ctx.beginPath(); ctx.arc(rx,ry,24,0,Math.PI*2);
+  ctx.shadowColor='rgba(0,0,0,0.9)';
+  ctx.shadowBlur=8;
+
+  // Dış circle — sabit boyut
+  ctx.beginPath(); ctx.arc(rx,ry,32,0,Math.PI*2);
   ctx.strokeStyle=centered?'#00ff44':'#ff2222';
-  ctx.lineWidth=4; ctx.stroke();
-  ctx.beginPath(); ctx.arc(rx,ry,10,0,Math.PI*2);
+  ctx.lineWidth=5; ctx.stroke();
+
+  // Orta circle
+  ctx.beginPath(); ctx.arc(rx,ry,18,0,Math.PI*2);
+  ctx.strokeStyle=centered?'#00ff44':'#ff6600';
+  ctx.lineWidth=3; ctx.stroke();
+
+  // Merkez nokta
+  ctx.beginPath(); ctx.arc(rx,ry,8,0,Math.PI*2);
   ctx.fillStyle=centered?'rgba(0,255,68,0.95)':'rgba(255,30,30,0.95)';
   ctx.fill();
   ctx.strokeStyle='#fff'; ctx.lineWidth=2; ctx.stroke();
+
   ctx.shadowBlur=0;
 }
 
@@ -201,6 +243,13 @@ function loop(){
     }
 
     drawRedCircle(octx,rx,ry,centered);
+
+    // Işık çapını mm cinsinden hesapla ve Noz'a yaz
+    if(lastR.diamPx>2){
+      const lightDiamMm=(lastR.diamPx*(ow/PW))*mpp;
+      nozVal.textContent=lightDiamMm.toFixed(2);
+    }
+
     statusBar.textContent=centered?'✓ MERKEZ — Hizalandi!':'Hizalanmiyor — vidaları ayarlayin';
   } else {
     dxEl.textContent='--'; dxEl.className='val';
