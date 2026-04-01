@@ -1,0 +1,279 @@
+<!DOCTYPE html>
+<html lang="tr">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0, user-scalable=no">
+<title>Lazer Hizalama v10</title>
+<style>
+* { margin:0; padding:0; box-sizing:border-box; }
+body { background:#000; color:#fff; font-family:sans-serif; display:flex; flex-direction:column; height:100vh; overflow:hidden; }
+#header { display:grid; grid-template-columns:1fr 1fr; background:#111; border-bottom:1px solid #333; padding:8px 12px; gap:8px; flex-shrink:0; }
+.hcell { background:#1a1a1a; border:1px solid #333; border-radius:6px; padding:8px 10px; }
+.lbl { font-size:11px; color:#888; margin-bottom:2px; }
+.val { font-size:22px; font-weight:500; color:#fff; }
+.green { color:#00ff44; }
+.yellow { color:#ffcc00; }
+.red { color:#ff4444; }
+#ver { position:absolute; top:4px; right:8px; font-size:10px; color:#444; }
+#camWrap { position:relative; flex:1; overflow:hidden; background:#000; }
+#video { width:100%; height:100%; object-fit:cover; display:block; filter:grayscale(1) contrast(2) brightness(0.85); }
+#oc { position:absolute; top:0; left:0; width:100%; height:100%; pointer-events:none; }
+#statusBar { background:#0d0d0d; padding:5px 12px; font-size:12px; color:#aaa; text-align:center; border-top:1px solid #222; flex-shrink:0; }
+#footer { background:#111; padding:10px 12px; display:flex; gap:8px; flex-shrink:0; }
+button { flex:1; padding:9px; border-radius:8px; border:1px solid #444; background:#1a1a1a; color:#fff; font-size:13px; cursor:pointer; }
+button.primary { background:#0a2a15; border-color:#00ff44; color:#00ff44; }
+</style>
+</head>
+<body>
+<div id="header">
+  <div class="hcell"><div class="lbl">Noz &#216;</div><div class="val" id="nozVal">1.60</div></div>
+  <div class="hcell"><div class="lbl">Batarya</div><div class="val" id="battVal" style="font-size:16px;">--%</div></div>
+  <div class="hcell"><div class="lbl">&#916;X (mm)</div><div class="val" id="dxVal">--</div></div>
+  <div class="hcell"><div class="lbl">&#916;Y (mm)</div><div class="val" id="dyVal">--</div></div>
+  <div id="ver">v10</div>
+</div>
+<div id="camWrap">
+  <video id="video" autoplay playsinline muted></video>
+  <canvas id="oc"></canvas>
+</div>
+<div id="statusBar">Kamera baslatiliyor...</div>
+<div id="footer">
+  <button class="primary" id="btnDiam">Cap: 1.60 mm</button>
+  <button id="btnSens">Hassasiyet: Orta</button>
+</div>
+<script>
+const video=document.getElementById('video');
+const oc=document.getElementById('oc');
+const octx=oc.getContext('2d');
+const statusBar=document.getElementById('statusBar');
+const nozVal=document.getElementById('nozVal');
+const dxEl=document.getElementById('dxVal');
+const dyEl=document.getElementById('dyVal');
+const battVal=document.getElementById('battVal');
+
+const diams=[0.8,1.0,1.2,1.5,1.6,2.0,2.5,3.0];
+let diamIdx=4, sensLevel=1;
+const sensLabels=['Dusuk','Orta','Yuksek'];
+const redThresh=[22,40,62];
+
+const wc=document.createElement('canvas');
+const wctx=wc.getContext('2d',{willReadFrequently:true});
+const PW=160,PH=120;
+wc.width=PW; wc.height=PH;
+
+(async()=>{
+  try{
+    const b=await navigator.getBattery();
+    const upd=()=>{
+      const p=Math.round(b.level*100);
+      battVal.textContent=p+'%';
+      battVal.className='val '+(p>50?'green':p>20?'yellow':'red');
+    };
+    upd(); b.addEventListener('levelchange',upd);
+  }catch(e){battVal.textContent='N/A';}
+})();
+
+async function startCam(){
+  const constraints=[
+    {video:{facingMode:'user',width:{ideal:1280},height:{ideal:720}}},
+    {video:{facingMode:'environment',width:{ideal:1280},height:{ideal:720}}},
+    {video:{width:{ideal:1280},height:{ideal:720}}},
+    {video:true}
+  ];
+  for(const c of constraints){
+    try{
+      const s=await navigator.mediaDevices.getUserMedia(c);
+      video.srcObject=s;
+      await new Promise(r=>video.onloadedmetadata=r);
+      statusBar.textContent='Kamera aktif — v10';
+      requestAnimationFrame(loop);
+      return;
+    }catch(e){}
+  }
+  statusBar.textContent='Kamera acilamadi — izin verin';
+}
+
+function findRed(data,W,H){
+  const t=redThresh[sensLevel];
+  // Önce çok parlak kırmızıyı bul (saçılma değil gerçek ışık)
+  let sx=0,sy=0,n=0;
+  for(let i=0;i<data.length;i+=4){
+    const r=data[i],g=data[i+1],b=data[i+2];
+    // Yüksek eşik — sadece en parlak kırmızı
+    if(r>200&&g<t&&b<t&&r>g*3&&r>b*3){
+      sx+=(i/4)%W; sy+=Math.floor((i/4)/W); n++;
+    }
+  }
+  // Yüksek eşikte bulamazsa normal eşiğe düş
+  if(n<4){
+    sx=0; sy=0; n=0;
+    for(let i=0;i<data.length;i+=4){
+      const r=data[i],g=data[i+1],b=data[i+2];
+      if(r>130&&g<t&&b<t&&r>g*2.2&&r>b*2.2){
+        sx+=(i/4)%W; sy+=Math.floor((i/4)/W); n++;
+      }
+    }
+  }
+  if(n<4) return null;
+  const cx=sx/n, cy=sy/n;
+  // Merkeze yakın piksellerin çapını hesapla (saçılmayı eler)
+  let dists=[];
+  for(let i=0;i<data.length;i+=4){
+    const r=data[i],g=data[i+1],b=data[i+2];
+    if(r>130&&g<t&&b<t&&r>g*2.2&&r>b*2.2){
+      const px=(i/4)%W, py=Math.floor((i/4)/W);
+      dists.push(Math.sqrt((px-cx)**2+(py-cy)**2));
+    }
+  }
+  dists.sort((a,b)=>a-b);
+  const diamPx=dists[Math.floor(dists.length*0.5)]*2; // medyan yarıçap x2
+  return{x:cx,y:cy,diamPx};
+}
+
+function drawDart(ctx,cx,cy,R,color,W,H){
+  ctx.shadowColor='rgba(0,0,0,0.95)';
+  ctx.shadowBlur=10;
+
+  // Dış büyük daire
+  ctx.beginPath(); ctx.arc(cx,cy,R,0,Math.PI*2);
+  ctx.strokeStyle=color; ctx.lineWidth=6; ctx.stroke();
+
+  // İç küçük daire
+  ctx.beginPath(); ctx.arc(cx,cy,R*0.3,0,Math.PI*2);
+  ctx.strokeStyle=color; ctx.lineWidth=4; ctx.stroke();
+
+  // Dışa taşan kalın çizgiler
+  ctx.lineWidth=6; ctx.strokeStyle=color;
+  ctx.beginPath(); ctx.moveTo(0,cy); ctx.lineTo(cx-R-2,cy); ctx.stroke();
+  ctx.beginPath(); ctx.moveTo(cx+R+2,cy); ctx.lineTo(W,cy); ctx.stroke();
+  ctx.beginPath(); ctx.moveTo(cx,0); ctx.lineTo(cx,cy-R-2); ctx.stroke();
+  ctx.beginPath(); ctx.moveTo(cx,cy+R+2); ctx.lineTo(cx,H); ctx.stroke();
+
+  // İçeride kesik
+  ctx.save();
+  ctx.setLineDash([14,8]);
+  ctx.lineWidth=4; ctx.strokeStyle=color;
+  ctx.beginPath(); ctx.moveTo(cx-R+2,cy); ctx.lineTo(cx+R-2,cy); ctx.stroke();
+  ctx.beginPath(); ctx.moveTo(cx,cy-R+2); ctx.lineTo(cx,cy+R-2); ctx.stroke();
+  ctx.restore();
+
+  // Merkez +
+  ctx.shadowBlur=0;
+  ctx.lineWidth=5; ctx.strokeStyle=color;
+  ctx.beginPath();
+  ctx.moveTo(cx-22,cy); ctx.lineTo(cx+22,cy);
+  ctx.moveTo(cx,cy-22); ctx.lineTo(cx,cy+22);
+  ctx.stroke();
+  ctx.beginPath(); ctx.arc(cx,cy,6,0,Math.PI*2);
+  ctx.fillStyle=color; ctx.fill();
+  ctx.shadowBlur=0;
+}
+
+function drawRedCircle(ctx,rx,ry,centered){
+  ctx.shadowColor='rgba(0,0,0,0.9)';
+  ctx.shadowBlur=8;
+
+  // Dış circle — sabit boyut
+  ctx.beginPath(); ctx.arc(rx,ry,32,0,Math.PI*2);
+  ctx.strokeStyle=centered?'#00ff44':'#ff2222';
+  ctx.lineWidth=5; ctx.stroke();
+
+  // Orta circle
+  ctx.beginPath(); ctx.arc(rx,ry,18,0,Math.PI*2);
+  ctx.strokeStyle=centered?'#00ff44':'#ff6600';
+  ctx.lineWidth=3; ctx.stroke();
+
+  // Merkez nokta
+  ctx.beginPath(); ctx.arc(rx,ry,8,0,Math.PI*2);
+  ctx.fillStyle=centered?'rgba(0,255,68,0.95)':'rgba(255,30,30,0.95)';
+  ctx.fill();
+  ctx.strokeStyle='#fff'; ctx.lineWidth=2; ctx.stroke();
+
+  ctx.shadowBlur=0;
+}
+
+let lastR=null;
+
+function loop(){
+  if(video.readyState<2){requestAnimationFrame(loop);return;}
+
+  const ow=oc.offsetWidth, oh=oc.offsetHeight;
+  if(oc.width!==ow||oc.height!==oh){oc.width=ow; oc.height=oh;}
+  octx.clearRect(0,0,ow,oh);
+
+  // Dart her zaman tam orta
+  const dartX=ow/2, dartY=oh/2;
+  const dartR=Math.min(ow,oh)*0.32;
+  const nd=diams[diamIdx];
+  const mpp=nd/(dartR*2);
+
+  // Kırmızı tespit
+  wctx.drawImage(video,0,0,PW,PH);
+  const raw=wctx.getImageData(0,0,PW,PH).data;
+  lastR=findRed(raw,PW,PH);
+
+  let color='#ffcc00';
+
+  if(lastR){
+    const rx=lastR.x*(ow/PW);
+    const ry=lastR.y*(oh/PH);
+    const dxp=rx-dartX, dyp=ry-dartY;
+    const dist=Math.sqrt(dxp**2+dyp**2);
+    const centered=dist<dartR*0.12;
+    color=centered?'#00ff44':'#ffcc00';
+
+    const dxm=dxp*mpp, dym=dyp*mpp;
+    const fmt=v=>(v>=0?'+':'')+v.toFixed(2);
+    const cls=v=>Math.abs(v)<0.05?'val green':Math.abs(v)<0.15?'val yellow':'val red';
+    dxEl.textContent=fmt(dxm); dxEl.className=cls(dxm);
+    dyEl.textContent=fmt(dym); dyEl.className=cls(dym);
+
+    // Ok
+    if(!centered&&dist>10){
+      const ang=Math.atan2(dyp,dxp);
+      const len=Math.min(dist*0.45,65);
+      const ex=dartX+Math.cos(ang)*len, ey=dartY+Math.sin(ang)*len;
+      octx.beginPath(); octx.moveTo(dartX,dartY); octx.lineTo(ex,ey);
+      octx.strokeStyle='#ff8800'; octx.lineWidth=5; octx.stroke();
+      octx.beginPath();
+      octx.moveTo(ex,ey);
+      octx.lineTo(ex-Math.cos(ang-0.4)*20,ey-Math.sin(ang-0.4)*20);
+      octx.lineTo(ex-Math.cos(ang+0.4)*20,ey-Math.sin(ang+0.4)*20);
+      octx.closePath(); octx.fillStyle='#ff8800'; octx.fill();
+    }
+
+    drawRedCircle(octx,rx,ry,centered);
+
+    // Işık çapını mm cinsinden hesapla ve Noz'a yaz
+    if(lastR.diamPx>2){
+      const lightDiamMm=(lastR.diamPx*(ow/PW))*mpp;
+      nozVal.textContent=lightDiamMm.toFixed(2);
+    }
+
+    statusBar.textContent=centered?'✓ MERKEZ — Hizalandi!':'Hizalanmiyor — vidaları ayarlayin';
+  } else {
+    dxEl.textContent='--'; dxEl.className='val';
+    dyEl.textContent='--'; dyEl.className='val';
+    statusBar.textContent='Kirmizi isik bulunamadi';
+  }
+
+  // Dart her zaman en son çizilir — üstte görünür
+  drawDart(octx,dartX,dartY,dartR,color,ow,oh);
+
+  requestAnimationFrame(loop);
+}
+
+document.getElementById('btnDiam').addEventListener('click',()=>{
+  diamIdx=(diamIdx+1)%diams.length;
+  nozVal.textContent=diams[diamIdx].toFixed(2);
+  document.getElementById('btnDiam').textContent='Cap: '+diams[diamIdx].toFixed(2)+' mm';
+});
+document.getElementById('btnSens').addEventListener('click',()=>{
+  sensLevel=(sensLevel+1)%3;
+  document.getElementById('btnSens').textContent='Hassasiyet: '+sensLabels[sensLevel];
+});
+
+startCam();
+</script>
+</body>
+</html>
