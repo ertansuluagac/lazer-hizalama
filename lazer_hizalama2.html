@@ -1,0 +1,320 @@
+<!DOCTYPE html>
+<html lang="tr">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0, user-scalable=no">
+<title>Lazer Hizalama</title>
+<style>
+  * { margin: 0; padding: 0; box-sizing: border-box; }
+  body { background: #0d0d0d; color: #fff; font-family: sans-serif; overflow: hidden; height: 100vh; display: flex; flex-direction: column; }
+
+  #camWrap { position: relative; flex: 1; overflow: hidden; }
+  #video { width: 100%; height: 100%; object-fit: cover; display: block; }
+  #overlay { position: absolute; top: 0; left: 0; width: 100%; height: 100%; pointer-events: none; }
+
+  #centerMark {
+    position: absolute; width: 40px; height: 40px;
+    transform: translate(-50%, -50%);
+    pointer-events: none;
+  }
+  #centerMark::before, #centerMark::after {
+    content: ''; position: absolute; background: #00ff88;
+  }
+  #centerMark::before { width: 2px; height: 40px; left: 19px; top: 0; }
+  #centerMark::after { width: 40px; height: 2px; top: 19px; left: 0; }
+
+  #redDot {
+    position: absolute; width: 16px; height: 16px;
+    border-radius: 50%; background: #ff2222;
+    transform: translate(-50%, -50%);
+    pointer-events: none; display: none;
+    border: 2px solid #fff;
+  }
+
+  #arrow {
+    position: absolute; pointer-events: none; display: none;
+  }
+
+  #panel {
+    background: #111; padding: 12px 16px;
+    display: flex; flex-direction: column; gap: 8px;
+  }
+
+  #statusRow {
+    display: flex; align-items: center; gap: 10px;
+  }
+
+  #statusDot {
+    width: 10px; height: 10px; border-radius: 50%; background: #555; flex-shrink: 0;
+  }
+
+  #statusText { font-size: 13px; color: #aaa; }
+
+  #metricsRow {
+    display: grid; grid-template-columns: 1fr 1fr 1fr; gap: 8px;
+  }
+
+  .metric {
+    background: #1a1a1a; border-radius: 8px; padding: 8px 10px; text-align: center;
+  }
+  .metric .lbl { font-size: 10px; color: #666; margin-bottom: 2px; }
+  .metric .val { font-size: 16px; font-weight: 500; color: #fff; }
+  .metric .val.ok { color: #00ff88; }
+  .metric .val.warn { color: #ffaa00; }
+  .metric .val.bad { color: #ff4444; }
+
+  #btnRow { display: flex; gap: 8px; }
+
+  button {
+    flex: 1; padding: 10px; border-radius: 8px;
+    border: 1px solid #333; background: #1a1a1a;
+    color: #fff; font-size: 13px; cursor: pointer;
+  }
+  button.primary { background: #1a3a2a; border-color: #00ff88; color: #00ff88; }
+  button:active { opacity: 0.7; }
+
+  #hint {
+    font-size: 12px; color: #555; text-align: center; padding-bottom: 4px;
+  }
+
+  canvas { display: none; }
+</style>
+</head>
+<body>
+
+<div id="camWrap">
+  <video id="video" autoplay playsinline muted></video>
+  <canvas id="canvas"></canvas>
+  <div id="centerMark"></div>
+  <div id="redDot"></div>
+  <svg id="arrow" width="100" height="100">
+    <defs>
+      <marker id="arrowHead" markerWidth="6" markerHeight="6" refX="3" refY="3" orient="auto">
+        <path d="M0,0 L6,3 L0,6 Z" fill="#ffaa00"/>
+      </marker>
+    </defs>
+    <line id="arrowLine" x1="50" y1="50" x2="80" y2="50"
+      stroke="#ffaa00" stroke-width="2.5"
+      marker-end="url(#arrowHead)"/>
+  </svg>
+  <div id="overlay"></div>
+</div>
+
+<div id="panel">
+  <div id="statusRow">
+    <div id="statusDot"></div>
+    <span id="statusText">Kamera başlatılıyor...</span>
+  </div>
+
+  <div id="metricsRow">
+    <div class="metric">
+      <div class="lbl">X sapma</div>
+      <div class="val" id="mX">—</div>
+    </div>
+    <div class="metric">
+      <div class="lbl">Y sapma</div>
+      <div class="val" id="mY">—</div>
+    </div>
+    <div class="metric">
+      <div class="lbl">Toplam</div>
+      <div class="val" id="mTotal">—</div>
+    </div>
+  </div>
+
+  <div id="btnRow">
+    <button class="primary" id="btnCenter">Merkez Ayarla</button>
+    <button id="btnSensitivity">Hassasiyet: Orta</button>
+  </div>
+
+  <div id="hint">Nozzle'ı kameraya hizalayın, sonra "Merkez Ayarla"ya basın</div>
+</div>
+
+<script>
+const video = document.getElementById('video');
+const canvas = document.getElementById('canvas');
+const ctx = canvas.getContext('2d');
+const centerMark = document.getElementById('centerMark');
+const redDotEl = document.getElementById('redDot');
+const arrowSvg = document.getElementById('arrow');
+const arrowLine = document.getElementById('arrowLine');
+const statusDot = document.getElementById('statusDot');
+const statusText = document.getElementById('statusText');
+const mX = document.getElementById('mX');
+const mY = document.getElementById('mY');
+const mTotal = document.getElementById('mTotal');
+const hint = document.getElementById('hint');
+
+let centerX = 0, centerY = 0;
+let centerSet = false;
+let sensitivity = 1;
+let sensLevel = 1;
+const sensLabels = ['Düşük', 'Orta', 'Yüksek'];
+const sensThresholds = [40, 25, 15];
+
+const camWrap = document.getElementById('camWrap');
+
+function updateCenter() {
+  const rect = camWrap.getBoundingClientRect();
+  if (!centerSet) {
+    centerX = rect.width / 2;
+    centerY = rect.height / 2;
+  }
+  centerMark.style.left = centerX + 'px';
+  centerMark.style.top = centerY + 'px';
+}
+
+async function startCamera() {
+  try {
+    const stream = await navigator.mediaDevices.getUserMedia({
+      video: { facingMode: 'user', width: { ideal: 1280 }, height: { ideal: 720 } }
+    });
+    video.srcObject = stream;
+    video.onloadedmetadata = () => {
+      canvas.width = video.videoWidth;
+      canvas.height = video.videoHeight;
+      statusDot.style.background = '#00ff88';
+      statusText.textContent = 'Kamera aktif — merkezi ayarlayın';
+      updateCenter();
+      requestAnimationFrame(processFrame);
+    };
+  } catch(e) {
+    statusDot.style.background = '#ff4444';
+    statusText.textContent = 'Kamera izni verilmedi';
+    hint.textContent = 'Tarayıcı adres çubuğundan kamera iznini açın';
+  }
+}
+
+function processFrame() {
+  if (video.readyState < 2) { requestAnimationFrame(processFrame); return; }
+
+  ctx.drawImage(video, 0, 0, canvas.width, canvas.height);
+  const imgData = ctx.getImageData(0, 0, canvas.width, canvas.height);
+  const data = imgData.data;
+
+  let sumX = 0, sumY = 0, count = 0;
+  const threshold = sensThresholds[sensLevel];
+
+  for (let i = 0; i < data.length; i += 4) {
+    const r = data[i], g = data[i+1], b = data[i+2];
+    if (r > 150 && g < threshold && b < threshold && r > g * 2 && r > b * 2) {
+      const px = (i / 4) % canvas.width;
+      const py = Math.floor((i / 4) / canvas.width);
+      sumX += px; sumY += py; count++;
+    }
+  }
+
+  const rect = camWrap.getBoundingClientRect();
+  const scaleX = rect.width / canvas.width;
+  const scaleY = rect.height / canvas.height;
+
+  if (count > 50) {
+    const dotX = (sumX / count) * scaleX;
+    const dotY = (sumY / count) * scaleY;
+
+    redDotEl.style.display = 'block';
+    redDotEl.style.left = dotX + 'px';
+    redDotEl.style.top = dotY + 'px';
+
+    if (centerSet) {
+      const dx = dotX - centerX;
+      const dy = dotY - centerY;
+      const dist = Math.sqrt(dx*dx + dy*dy);
+      const pxPerMm = rect.width / 100;
+
+      const dxMm = (dx / pxPerMm).toFixed(1);
+      const dyMm = (dy / pxPerMm).toFixed(1);
+      const totalMm = (dist / pxPerMm).toFixed(1);
+
+      const setVal = (el, val) => {
+        const n = Math.abs(parseFloat(val));
+        el.textContent = (parseFloat(val) > 0 ? '+' : '') + val + ' px';
+        el.className = 'val ' + (n < 5 ? 'ok' : n < 15 ? 'warn' : 'bad');
+      };
+
+      setVal(mX, dxMm);
+      setVal(mY, dyMm);
+      const tot = mTotal;
+      tot.textContent = totalMm + ' px';
+      tot.className = 'val ' + (parseFloat(totalMm) < 5 ? 'ok' : parseFloat(totalMm) < 15 ? 'warn' : 'bad');
+
+      if (dist > 8) {
+        arrowSvg.style.display = 'block';
+        const cx = centerX, cy = centerY;
+        const angle = Math.atan2(dy, dx);
+        const len = Math.min(dist * 0.6, 60);
+        const ex = cx + Math.cos(angle) * len;
+        const ey = cy + Math.sin(angle) * len;
+
+        arrowSvg.style.left = (Math.min(cx, ex) - 20) + 'px';
+        arrowSvg.style.top = (Math.min(cy, ey) - 20) + 'px';
+        arrowSvg.setAttribute('width', Math.abs(ex - cx) + 40);
+        arrowSvg.setAttribute('height', Math.abs(ey - cy) + 40);
+
+        const ox = 20 + (cx < ex ? 0 : Math.abs(ex - cx));
+        const oy = 20 + (cy < ey ? 0 : Math.abs(ey - cy));
+        const tx = 20 + (cx < ex ? Math.abs(ex - cx) : 0);
+        const ty = 20 + (cy < ey ? Math.abs(ey - cy) : 0);
+        arrowLine.setAttribute('x1', ox);
+        arrowLine.setAttribute('y1', oy);
+        arrowLine.setAttribute('x2', tx);
+        arrowLine.setAttribute('y2', ty);
+
+        const dirs = [];
+        if (Math.abs(dx) > 8) dirs.push(dx > 0 ? 'Sag' : 'Sol');
+        if (Math.abs(dy) > 8) dirs.push(dy > 0 ? 'Asagi' : 'Yukari');
+        statusText.textContent = dirs.length ? dirs.join(' + ') + ' kayiyor' : 'Hizalaniyor...';
+        statusDot.style.background = '#ffaa00';
+      } else {
+        arrowSvg.style.display = 'none';
+        statusText.textContent = 'MERKEZ — Hizalanmis!';
+        statusDot.style.background = '#00ff88';
+      }
+    } else {
+      statusText.textContent = 'Kirmizi nokta bulundu — merkezi ayarlayin';
+      statusDot.style.background = '#ffaa00';
+      arrowSvg.style.display = 'none';
+    }
+  } else {
+    redDotEl.style.display = 'none';
+    arrowSvg.style.display = 'none';
+    if (centerSet) {
+      statusText.textContent = 'Kirmizi nokta bulunamadi';
+      statusDot.style.background = '#ff4444';
+      mX.textContent = '—'; mX.className = 'val';
+      mY.textContent = '—'; mY.className = 'val';
+      mTotal.textContent = '—'; mTotal.className = 'val';
+    }
+  }
+
+  requestAnimationFrame(processFrame);
+}
+
+document.getElementById('btnCenter').addEventListener('click', () => {
+  const rect = camWrap.getBoundingClientRect();
+  centerX = rect.width / 2;
+  centerY = rect.height / 2;
+  centerSet = true;
+  centerMark.style.left = centerX + 'px';
+  centerMark.style.top = centerY + 'px';
+  hint.textContent = 'Merkez ayarlandi — lazer isiginizi hizalayin';
+});
+
+camWrap.addEventListener('click', (e) => {
+  if (!centerSet) return;
+  const rect = camWrap.getBoundingClientRect();
+  centerX = e.clientX - rect.left;
+  centerY = e.clientY - rect.top;
+  centerMark.style.left = centerX + 'px';
+  centerMark.style.top = centerY + 'px';
+});
+
+document.getElementById('btnSensitivity').addEventListener('click', () => {
+  sensLevel = (sensLevel + 1) % 3;
+  document.getElementById('btnSensitivity').textContent = 'Hassasiyet: ' + sensLabels[sensLevel];
+});
+
+window.addEventListener('resize', updateCenter);
+startCamera();
+</script>
+</body>
+</html>

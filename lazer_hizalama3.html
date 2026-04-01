@@ -1,0 +1,338 @@
+<!DOCTYPE html>
+<html lang="tr">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0, user-scalable=no">
+<title>Lazer Hizalama</title>
+<style>
+* { margin:0; padding:0; box-sizing:border-box; }
+body { background:#000; color:#fff; font-family:sans-serif; display:flex; flex-direction:column; height:100vh; overflow:hidden; }
+
+#header {
+  display:grid; grid-template-columns:1fr 1fr;
+  background:#111; border-bottom:1px solid #333;
+  padding:8px 12px; gap:8px;
+}
+.hcell {
+  background:#1a1a1a; border:1px solid #333;
+  border-radius:6px; padding:8px 10px;
+}
+.hcell .lbl { font-size:11px; color:#888; margin-bottom:2px; }
+.hcell .val { font-size:22px; font-weight:500; color:#fff; }
+.hcell .val.green { color:#00ff44; }
+.hcell .val.yellow { color:#ffcc00; }
+.hcell .val.red { color:#ff4444; }
+.batt { display:flex; align-items:center; gap:6px; }
+.batt-bar { width:40px; height:16px; border:2px solid #00ff44; border-radius:3px; position:relative; padding:2px; }
+.batt-bar::after { content:''; position:absolute; right:-5px; top:4px; width:3px; height:8px; background:#00ff44; border-radius:1px; }
+.batt-fill { height:100%; background:#00ff44; border-radius:1px; width:80%; }
+
+#camWrap { position:relative; flex:1; overflow:hidden; background:#000; }
+#video { width:100%; height:100%; object-fit:cover; display:block; }
+#canvas { display:none; }
+#overlayCanvas { position:absolute; top:0; left:0; width:100%; height:100%; pointer-events:none; }
+
+#footer {
+  background:#111; padding:10px 12px;
+  display:flex; gap:8px; align-items:center;
+}
+button {
+  flex:1; padding:9px; border-radius:8px;
+  border:1px solid #444; background:#1a1a1a;
+  color:#fff; font-size:13px; cursor:pointer;
+}
+button.primary { background:#0a2a15; border-color:#00ff44; color:#00ff44; }
+button:active { opacity:0.7; }
+
+#statusBar {
+  background:#0d0d0d; padding:5px 12px;
+  font-size:12px; color:#888; text-align:center;
+  border-top:1px solid #222;
+}
+</style>
+</head>
+<body>
+
+<div id="header">
+  <div class="hcell">
+    <div class="lbl">Noz &#216;</div>
+    <div class="val" id="nozVal">--</div>
+  </div>
+  <div class="hcell batt">
+    <div>
+      <div class="lbl">Batarya</div>
+      <div style="font-size:13px;color:#00ff44;">80%</div>
+    </div>
+    <div class="batt-bar"><div class="batt-fill"></div></div>
+  </div>
+  <div class="hcell">
+    <div class="lbl">&#916;X</div>
+    <div class="val" id="dxVal">--</div>
+  </div>
+  <div class="hcell">
+    <div class="lbl">&#916;Y</div>
+    <div class="val" id="dyVal">--</div>
+  </div>
+</div>
+
+<div id="camWrap">
+  <video id="video" autoplay playsinline muted></video>
+  <canvas id="canvas"></canvas>
+  <canvas id="overlayCanvas"></canvas>
+</div>
+
+<div id="statusBar" id="statusBar">Kamera baslatiliyor...</div>
+
+<div id="footer">
+  <button class="primary" id="btnCalibrate">Merkez Kalibrasyon</button>
+  <button id="btnSens">Hassasiyet: Orta</button>
+</div>
+
+<script>
+const video = document.getElementById('video');
+const canvas = document.getElementById('canvas');
+const ctx = canvas.getContext('2d');
+const overlayCanvas = document.getElementById('overlayCanvas');
+const octx = overlayCanvas.getContext('2d');
+const statusBar = document.getElementById('statusBar');
+const nozVal = document.getElementById('nozVal');
+const dxVal = document.getElementById('dxVal');
+const dyVal = document.getElementById('dyVal');
+
+let calX = -1, calY = -1, calR = -1;
+let calibrated = false;
+let sensLevel = 1;
+const sensLabels = ['Dusuk','Orta','Yuksek'];
+const redThresh = [30, 45, 60];
+
+let pxPerMm = 0;
+
+async function startCam() {
+  try {
+    const stream = await navigator.mediaDevices.getUserMedia({
+      video: { facingMode: 'user', width:{ideal:1280}, height:{ideal:720} }
+    });
+    video.srcObject = stream;
+    video.onloadedmetadata = () => {
+      canvas.width = video.videoWidth;
+      canvas.height = video.videoHeight;
+      statusBar.textContent = 'Kamera aktif — Nozzle\'i kameraya tutun';
+      requestAnimationFrame(process);
+    };
+  } catch(e) {
+    statusBar.textContent = 'Kamera izni verilmedi — tarayici adres cubugunda izin verin';
+  }
+}
+
+function detectNozzle(data, w, h) {
+  const step = 4;
+  let edgeMap = new Uint8Array(w * h);
+
+  for (let y = step; y < h - step; y += 1) {
+    for (let x = step; x < w - step; x += 1) {
+      const i = (y * w + x) * 4;
+      const r = data[i], g = data[i+1], b = data[i+2];
+      const bright = (r + g + b) / 3;
+      const il = ((y * w + (x-step)) * 4);
+      const ir = ((y * w + (x+step)) * 4);
+      const iu = (((y-step) * w + x) * 4);
+      const id = (((y+step) * w + x) * 4);
+      const bl = (data[il]+data[il+1]+data[il+2])/3;
+      const br2 = (data[ir]+data[ir+1]+data[ir+2])/3;
+      const bu = (data[iu]+data[iu+1]+data[iu+2])/3;
+      const bd = (data[id]+data[id+1]+data[id+2])/3;
+      const grad = Math.abs(bl-br2) + Math.abs(bu-bd);
+      if (grad > 60 && bright > 30 && bright < 220) {
+        edgeMap[y * w + x] = 1;
+      }
+    }
+  }
+
+  let sumX = 0, sumY = 0, count = 0;
+  const margin = Math.floor(Math.min(w, h) * 0.1);
+  for (let y = margin; y < h - margin; y++) {
+    for (let x = margin; x < w - margin; x++) {
+      if (edgeMap[y * w + x]) {
+        sumX += x; sumY += y; count++;
+      }
+    }
+  }
+  if (count < 100) return null;
+
+  const cx = sumX / count;
+  const cy = sumY / count;
+
+  let dists = [];
+  for (let y = margin; y < h - margin; y++) {
+    for (let x = margin; x < w - margin; x++) {
+      if (edgeMap[y * w + x]) {
+        const d = Math.sqrt((x-cx)**2 + (y-cy)**2);
+        dists.push(d);
+      }
+    }
+  }
+  dists.sort((a,b) => a-b);
+  const median = dists[Math.floor(dists.length * 0.5)];
+
+  if (median < 20 || median > Math.min(w,h) * 0.45) return null;
+
+  return { cx, cy, r: median };
+}
+
+function detectRedLight(data, w, h) {
+  const thresh = redThresh[sensLevel];
+  let sumX = 0, sumY = 0, count = 0;
+  for (let i = 0; i < data.length; i += 4) {
+    const r = data[i], g = data[i+1], b = data[i+2];
+    if (r > 140 && g < thresh && b < thresh && r > g * 2.2 && r > b * 2.2) {
+      const px = (i/4) % w;
+      const py = Math.floor((i/4) / w);
+      sumX += px; sumY += py; count++;
+    }
+  }
+  if (count < 30) return null;
+  return { x: sumX/count, y: sumY/count, count };
+}
+
+function process() {
+  if (video.readyState < 2) { requestAnimationFrame(process); return; }
+
+  ctx.drawImage(video, 0, 0, canvas.width, canvas.height);
+  const imgData = ctx.getImageData(0, 0, canvas.width, canvas.height);
+  const data = imgData.data;
+  const W = canvas.width, H = canvas.height;
+
+  const ow = overlayCanvas.width = overlayCanvas.offsetWidth;
+  const oh = overlayCanvas.height = overlayCanvas.offsetHeight;
+  const scaleX = ow / W;
+  const scaleY = oh / H;
+
+  octx.clearRect(0, 0, ow, oh);
+
+  const nozzle = detectNozzle(data, W, H);
+  const red = detectRedLight(data, W, H);
+
+  let nozzleDetected = false;
+  let centered = false;
+  let dx = 0, dy = 0;
+
+  if (nozzle) {
+    nozzleDetected = true;
+    const nx = nozzle.cx * scaleX;
+    const ny = nozzle.cy * scaleY;
+    const nr = nozzle.r * ((scaleX + scaleY) / 2);
+
+    pxPerMm = (nozzle.r * 2) / parseFloat(nozVal.textContent || '1.6') || (nozzle.r * 2 / 1.6);
+
+    const diamMm = ((nozzle.r * 2) / (pxPerMm || (nozzle.r * 2 / 1.6))).toFixed(2);
+
+    let circleColor = '#ffcc00';
+
+    if (red) {
+      const rx = red.x * scaleX;
+      const ry = red.y * scaleY;
+      dx = red.x - nozzle.cx;
+      dy = red.y - nozzle.cy;
+      const distPx = Math.sqrt(dx*dx + dy*dy);
+      const mmPerPx = 1.6 / (nozzle.r * 2);
+      const dxMm = dx * mmPerPx;
+      const dyMm = dy * mmPerPx;
+
+      centered = distPx < nozzle.r * 0.15;
+      circleColor = centered ? '#00ff44' : '#ffcc00';
+
+      const sign = v => v >= 0 ? '+' : '';
+      dxVal.textContent = sign(dxMm) + dxMm.toFixed(2);
+      dxVal.className = 'val ' + (centered ? 'green' : Math.abs(dxMm) < 0.1 ? 'yellow' : 'red');
+      dyVal.textContent = sign(dyMm) + dyMm.toFixed(2);
+      dyVal.className = 'val ' + (centered ? 'green' : Math.abs(dyMm) < 0.1 ? 'yellow' : 'red');
+
+      octx.beginPath();
+      octx.arc(rx, ry, 10, 0, Math.PI*2);
+      octx.fillStyle = centered ? '#00ff44' : '#ff2222';
+      octx.fill();
+      octx.strokeStyle = '#fff';
+      octx.lineWidth = 2;
+      octx.stroke();
+
+      if (!centered) {
+        const angle = Math.atan2(dy, dx);
+        const len = Math.min(distPx * scaleX * 0.5, 60);
+        octx.beginPath();
+        octx.moveTo(nx, ny);
+        octx.lineTo(nx + Math.cos(angle)*len, ny + Math.sin(angle)*len);
+        octx.strokeStyle = '#ffaa00';
+        octx.lineWidth = 2.5;
+        octx.stroke();
+        const ax = nx + Math.cos(angle)*len;
+        const ay = ny + Math.sin(angle)*len;
+        octx.beginPath();
+        octx.moveTo(ax, ay);
+        octx.lineTo(ax - Math.cos(angle-0.4)*12, ay - Math.sin(angle-0.4)*12);
+        octx.lineTo(ax - Math.cos(angle+0.4)*12, ay - Math.sin(angle+0.4)*12);
+        octx.closePath();
+        octx.fillStyle = '#ffaa00';
+        octx.fill();
+      }
+
+      statusBar.textContent = centered ? 'MERKEZ — Hizalandi!' : 'Hizalanmiyor — vidaları ayarlayin';
+    } else {
+      dxVal.textContent = '--'; dxVal.className = 'val';
+      dyVal.textContent = '--'; dyVal.className = 'val';
+      statusBar.textContent = 'Nozzle bulundu — kirmizi isik bekleniyor';
+    }
+
+    octx.beginPath();
+    octx.arc(nx, ny, nr, 0, Math.PI*2);
+    octx.strokeStyle = circleColor;
+    octx.lineWidth = 3;
+    octx.stroke();
+
+    octx.beginPath();
+    octx.moveTo(nx - nr - 15, ny); octx.lineTo(nx + nr + 15, ny);
+    octx.moveTo(nx, ny - nr - 15); octx.lineTo(nx, ny + nr + 15);
+    octx.strokeStyle = circleColor;
+    octx.lineWidth = 1.5;
+    octx.setLineDash([6, 4]);
+    octx.stroke();
+    octx.setLineDash([]);
+
+    octx.beginPath();
+    octx.arc(nx, ny, 6, 0, Math.PI*2);
+    octx.strokeStyle = circleColor;
+    octx.lineWidth = 2;
+    octx.stroke();
+    octx.beginPath();
+    octx.moveTo(nx-10, ny); octx.lineTo(nx+10, ny);
+    octx.moveTo(nx, ny-10); octx.lineTo(nx, ny+10);
+    octx.strokeStyle = circleColor;
+    octx.lineWidth = 2;
+    octx.stroke();
+
+    nozVal.textContent = '1.60';
+    nozVal.className = 'val ' + (centered ? 'green' : 'yellow');
+
+  } else {
+    nozVal.textContent = '--'; nozVal.className = 'val';
+    dxVal.textContent = '--'; dxVal.className = 'val';
+    dyVal.textContent = '--'; dyVal.className = 'val';
+    statusBar.textContent = 'Nozzle tespit edilemiyor — yaklastirin';
+  }
+
+  requestAnimationFrame(process);
+}
+
+document.getElementById('btnCalibrate').addEventListener('click', () => {
+  calibrated = true;
+  statusBar.textContent = 'Kalibrasyon yapildi';
+});
+
+document.getElementById('btnSens').addEventListener('click', () => {
+  sensLevel = (sensLevel + 1) % 3;
+  document.getElementById('btnSens').textContent = 'Hassasiyet: ' + sensLabels[sensLevel];
+});
+
+startCam();
+</script>
+</body>
+</html>
