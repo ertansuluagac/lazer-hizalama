@@ -3,7 +3,7 @@
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0, user-scalable=no">
-<title>Lazer Hizalama v11</title>
+<title>Lazer Hizalama v12</title>
 <style>
 * { margin:0; padding:0; box-sizing:border-box; }
 body { background:#000; color:#fff; font-family:sans-serif; display:flex; flex-direction:column; height:100vh; overflow:hidden; }
@@ -30,7 +30,7 @@ button.primary { background:#0a2a15; border-color:#00ff44; color:#00ff44; }
   <div class="hcell"><div class="lbl">Batarya</div><div class="val" id="battVal" style="font-size:16px;">--%</div></div>
   <div class="hcell"><div class="lbl">&#916;X (mm)</div><div class="val" id="dxVal">--</div></div>
   <div class="hcell"><div class="lbl">&#916;Y (mm)</div><div class="val" id="dyVal">--</div></div>
-  <div id="ver">v11</div>
+  <div id="ver">v12</div>
 </div>
 <div id="camWrap">
   <video id="video" autoplay playsinline muted></video>
@@ -87,7 +87,7 @@ async function startCam(){
       const s=await navigator.mediaDevices.getUserMedia(c);
       video.srcObject=s;
       await new Promise(r=>video.onloadedmetadata=r);
-      statusBar.textContent='Kamera aktif — v11';
+      statusBar.textContent='Kamera aktif — v12';
       requestAnimationFrame(loop);
       return;
     }catch(e){}
@@ -207,6 +207,7 @@ function drawRedCircle(ctx,rx,ry,centered){
 }
 
 let fc=0, lastB=null, lastR=null;
+let dartX=-1, dartY=-1; // -1 = henuz ayarlanmadi
 
 function loop(){
   if(video.readyState<2){requestAnimationFrame(loop);return;}
@@ -216,8 +217,8 @@ function loop(){
   if(oc.width!==ow||oc.height!==oh){oc.width=ow; oc.height=oh;}
   octx.clearRect(0,0,ow,oh);
 
-  // Dart merkezi — sabit orta
-  const dartX=ow/2, dartY=oh/2;
+  // Dart merkezi — dokunulursa oraya, yoksa ortaya
+  if(dartX<0) { dartX=ow/2; dartY=oh/2; }
   const dartR=Math.min(ow,oh)*0.32;
 
   // Küçük canvas işleme
@@ -310,6 +311,26 @@ document.getElementById('btnSens').addEventListener('click',()=>{
   sensLevel=(sensLevel+1)%3;
   document.getElementById('btnSens').textContent='Hassasiyet: '+sensLabels[sensLevel];
 });
+
+// Dokunma — dart o noktaya taşı
+oc.addEventListener('click', e=>{
+  const rect=oc.getBoundingClientRect();
+  dartX=e.clientX-rect.left;
+  dartY=e.clientY-rect.top;
+  statusBar.textContent='Dart tasindi — hizalayin';
+});
+
+// Uzun bas — dart'ı sıfırla (ortaya)
+let pressTimer=null;
+oc.addEventListener('touchstart', e=>{
+  pressTimer=setTimeout(()=>{
+    dartX=oc.offsetWidth/2;
+    dartY=oc.offsetHeight/2;
+    statusBar.textContent='Dart sifirlandi — orta';
+  }, 800);
+});
+oc.addEventListener('touchend', ()=>clearTimeout(pressTimer));
+oc.addEventListener('touchmove', ()=>clearTimeout(pressTimer));
 
 startCam();
 </script>
