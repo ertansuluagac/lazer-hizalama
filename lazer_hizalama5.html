@@ -3,7 +3,7 @@
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0, user-scalable=no">
-<title>Lazer Hizalama v12</title>
+<title>Lazer Hizalama v13</title>
 <style>
 * { margin:0; padding:0; box-sizing:border-box; }
 body { background:#000; color:#fff; font-family:sans-serif; display:flex; flex-direction:column; height:100vh; overflow:hidden; }
@@ -26,11 +26,11 @@ button.primary { background:#0a2a15; border-color:#00ff44; color:#00ff44; }
 </head>
 <body>
 <div id="header">
-  <div class="hcell"><div class="lbl">Noz &#216; (mm)</div><div class="val" id="nozVal">--</div></div>
+  <div class="hcell"><div class="lbl">Noz &#216; (mm) <span id="verSpan" style="color:#555;font-size:10px;margin-left:4px;">v13</span></div><div class="val" id="nozVal">--</div></div>
   <div class="hcell"><div class="lbl">Batarya</div><div class="val" id="battVal" style="font-size:16px;">--%</div></div>
   <div class="hcell"><div class="lbl">&#916;X (mm)</div><div class="val" id="dxVal">--</div></div>
   <div class="hcell"><div class="lbl">&#916;Y (mm)</div><div class="val" id="dyVal">--</div></div>
-  <div id="ver">v12</div>
+
 </div>
 <div id="camWrap">
   <video id="video" autoplay playsinline muted></video>
@@ -87,7 +87,7 @@ async function startCam(){
       const s=await navigator.mediaDevices.getUserMedia(c);
       video.srcObject=s;
       await new Promise(r=>video.onloadedmetadata=r);
-      statusBar.textContent='Kamera aktif — v12';
+      statusBar.textContent='Kamera aktif — v13';
       requestAnimationFrame(loop);
       return;
     }catch(e){}
@@ -237,20 +237,12 @@ function loop(){
   const sx=ow/PW, sy=oh/PH;
   const refDiam=diams[diamIdx];
 
-  // Parlak alan çiz + Noz çapı hesapla
+  // Parlak alan çiz — çap kullanıcının seçtiği
+  nozVal.textContent=refDiam.toFixed(2);
   if(lastB){
     const bx=lastB.cx*sx, by=lastB.cy*sy;
     const br2=lastB.r*(sx+sy)/2;
-
-    // Noz çapı: parlak alanın pikseli → mm
-    // Referans: kullanıcının seçtiği çap = dartR piksel
-    const mpp=refDiam/(dartR*2);
-    const nozDiamMm=(br2*2)*mpp;
-    nozVal.textContent=nozDiamMm.toFixed(2);
-
     drawBrightCircle(octx,bx,by,br2,ow,oh);
-  } else {
-    nozVal.textContent='--';
   }
 
   // Referans mm/px
